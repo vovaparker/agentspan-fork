@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Agentspan — Eval Results (Phase 1)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; display: flex; height: 100vh; overflow: hidden; }
+
+  .sidebar { width: 220px; min-width: 220px; background: #fff; border-right: 1px solid #e0e0e0; display: flex; flex-direction: column; padding: 12px 0; }
+  .sidebar-logo { padding: 8px 16px 16px; font-weight: 700; font-size: 18px; color: #1a1a2e; }
+  .sidebar-logo span { color: #5b6af0; }
+  .nav-section { font-size: 11px; font-weight: 700; color: #b0b0b0; text-transform: uppercase; letter-spacing: 0.6px; padding: 8px 16px 4px; }
+  .nav-sub { font-size: 13px; color: #616161; display: block; padding: 7px 16px 7px 32px; cursor: pointer; }
+  .nav-sub:hover { background: #f5f5f5; }
+  .nav-sub.active { color: #5b6af0; font-weight: 600; background: #ede9fe; }
+  .divider { height: 1px; background: #f0f0f0; margin: 8px 0; }
+  .new-badge { background: #ede9fe; color: #7c3aed; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; margin-left: 6px; }
+  .phase-badge { background: #f3f4f6; color: #6b7280; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; margin-left: 6px; border: 1px solid #e5e7eb; }
+
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .topbar { height: 56px; background: #fff; border-bottom: 1px solid #e0e0e0; display: flex; align-items: center; padding: 0 24px; justify-content: space-between; flex-shrink: 0; }
+  .topbar-title { font-size: 16px; font-weight: 600; color: #1a1a2e; }
+  .content { flex: 1; overflow-y: auto; padding: 24px; }
+
+  .screen { display: none; }
+  .screen.active { display: block; }
+
+  .page-title { font-size: 22px; font-weight: 700; color: #1a1a2e; margin-bottom: 4px; }
+  .page-subtitle { font-size: 13px; color: #9e9e9e; margin-bottom: 20px; }
+  .back-btn { background: none; border: none; color: #5b6af0; font-size: 13px; font-weight: 600; cursor: pointer; margin-bottom: 16px; padding: 0; }
+
+  .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+  .badge.pass    { background: #dcfce7; color: #16a34a; }
+  .badge.fail    { background: #fee2e2; color: #dc2626; }
+  .badge.eval-tag { background: #ede9fe; color: #7c3aed; }
+  .badge.prod    { background: #f3f4f6; color: #6b7280; }
+  .badge.running { background: #dbeafe; color: #2563eb; }
+
+  .agent-chip { display: inline-block; background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 4px; padding: 2px 8px; font-size: 11px; color: #374151; font-family: monospace; }
+  .timestamp { color: #9e9e9e; font-size: 12px; }
+
+  .btn-ghost { background: #fff; color: #5b6af0; border: 1px solid #c7d2fe; border-radius: 6px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .btn-ghost:hover { background: #ede9fe; }
+
+  /* Stats row */
+  .stats-row { display: flex; gap: 12px; margin-bottom: 20px; }
+  .stat-card { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 14px 20px; flex: 1; }
+  .stat-label { font-size: 11px; font-weight: 700; color: #9e9e9e; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px; }
+  .stat-value { font-size: 26px; font-weight: 700; color: #1a1a2e; }
+  .stat-value.green { color: #16a34a; }
+  .stat-value.red   { color: #dc2626; }
+  .stat-value.blue  { color: #5b6af0; }
+
+  /* Filters */
+  .filters { display: flex; gap: 10px; margin-bottom: 16px; align-items: center; }
+  .search-input { border: 1px solid #e0e0e0; border-radius: 6px; padding: 8px 12px; font-size: 13px; color: #424242; background: #fff; outline: none; width: 240px; }
+  .filter-select { border: 1px solid #e0e0e0; border-radius: 6px; padding: 8px 12px; font-size: 13px; color: #424242; background: #fff; cursor: pointer; }
+
+  /* Table */
+  .table-wrapper { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; }
+  thead tr { background: #fafafa; }
+  th { text-align: left; padding: 10px 16px; font-size: 11px; font-weight: 600; color: #9e9e9e; text-transform: uppercase; letter-spacing: 0.6px; border-bottom: 1px solid #e0e0e0; }
+  td { padding: 13px 16px; font-size: 13px; color: #424242; border-bottom: 1px solid #f5f5f5; vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  tr.clickable:hover td { background: #fafafa; cursor: pointer; }
+
+  /* Progress bar */
+  .prog-wrap { display: flex; align-items: center; gap: 8px; }
+  .prog-bar { height: 6px; background: #e5e7eb; border-radius: 3px; width: 80px; overflow: hidden; }
+  .prog-fill { height: 100%; border-radius: 3px; }
+  .prog-fill.green { background: #22c55e; }
+  .prog-fill.red   { background: #ef4444; }
+
+  /* Detail card */
+  .detail-card { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px 20px; margin-bottom: 16px; }
+  .detail-title { font-size: 17px; font-weight: 700; color: #1a1a2e; margin-bottom: 10px; }
+  .detail-meta { display: flex; gap: 20px; font-size: 13px; color: #757575; flex-wrap: wrap; }
+  .detail-meta strong { color: #424242; }
+
+  /* Case rows */
+  .case-row { border-bottom: 1px solid #f0f0f0; }
+  .case-row:last-child { border-bottom: none; }
+  .case-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; cursor: pointer; }
+  .case-header:hover { background: #fafafa; }
+  .case-left { display: flex; align-items: center; gap: 12px; }
+  .case-name { font-size: 13px; font-weight: 600; color: #1a1a2e; }
+  .case-prompt { font-size: 12px; color: #9e9e9e; margin-top: 2px; }
+  .case-right { display: flex; align-items: center; gap: 16px; }
+  .case-score { font-size: 12px; color: #6b7280; }
+
+  /* Expanded assertion detail */
+  .case-detail { display: none; padding: 0 16px 16px 44px; }
+  .case-detail.open { display: block; }
+  .assertion-row { display: flex; align-items: flex-start; gap: 8px; padding: 5px 0; font-size: 13px; color: #424242; border-bottom: 1px solid #f9f9f9; }
+  .assertion-row:last-child { border-bottom: none; }
+  .a-pass { color: #16a34a; font-weight: 700; flex-shrink: 0; }
+  .a-fail { color: #dc2626; font-weight: 700; flex-shrink: 0; }
+  .a-fail-detail { font-size: 12px; color: #dc2626; margin-top: 2px; }
+
+  .semantic-box { background: #ede9fe; border-radius: 6px; padding: 10px 14px; margin-top: 10px; }
+  .semantic-label { font-size: 10px; font-weight: 700; color: #7c3aed; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .semantic-score { font-size: 20px; font-weight: 700; color: #5b6af0; margin-bottom: 4px; }
+  .semantic-meta { font-size: 12px; color: #5b21b6; line-height: 1.5; }
+
+  .output-box { background: #f8fafc; border-radius: 6px; padding: 10px 14px; margin-top: 10px; font-size: 12px; color: #374151; line-height: 1.55; }
+  .output-label { font-size: 10px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+
+  /* SDK callout */
+  .sdk-callout { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 12px 16px; font-size: 13px; color: #166534; margin-bottom: 20px; line-height: 1.6; }
+  .sdk-callout code { background: #dcfce7; padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: 12px; }
+
+  /* Executions toggle */
+  .toggle-row { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid #e0e0e0; border-radius: 6px; padding: 6px 12px; font-size: 13px; color: #424242; cursor: pointer; margin-left: auto; }
+  .toggle-switch { width: 36px; height: 20px; border-radius: 10px; position: relative; transition: background 0.2s; background: #d1d5db; }
+  .toggle-switch.on { background: #5b6af0; }
+  .toggle-switch::after { content: ''; position: absolute; width: 16px; height: 16px; background: #fff; border-radius: 50%; top: 2px; left: 2px; transition: left 0.2s; }
+  .toggle-switch.on::after { left: 18px; }
+
+  tr.eval-row { opacity: 0.45; }
+
+  .callout { border-radius: 8px; padding: 12px 16px; font-size: 13px; line-height: 1.55; margin-bottom: 16px; display: flex; gap: 10px; align-items: flex-start; }
+  .callout.purple { background: #ede9fe; border: 1px solid #c4b5fd; color: #5b21b6; }
+  .callout code { background: rgba(0,0,0,0.07); padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<div class="sidebar">
+  <div class="sidebar-logo">agent<span>span</span></div>
+
+  <div class="nav-section">Executions</div>
+  <div class="nav-sub" id="nav-executions" onclick="show('executions')">▶ Agent Runs</div>
+  <div class="nav-sub">⏱ Queue Monitor</div>
+
+  <div class="divider"></div>
+  <div class="nav-section">Definitions</div>
+  <div class="nav-sub">◈ Agents</div>
+  <div class="nav-sub">🔑 Credentials</div>
+
+  <div class="divider"></div>
+  <div class="nav-section">Experiments <span class="new-badge">NEW</span></div>
+  <div class="nav-sub" id="nav-eval-runs" onclick="show('eval-runs')">⬡ Eval Runs</div>
+  <div class="nav-sub" id="nav-datasets" onclick="show('datasets')">⊞ Datasets</div>
+</div>
+
+<!-- Main -->
+<div class="main">
+  <div class="topbar">
+    <div class="topbar-title" id="topbar-title">Eval Runs</div>
+  </div>
+
+  <div class="content">
+
+    <!-- ══ SCREEN: Eval Runs list ══ -->
+    <div class="screen active" id="screen-eval-runs">
+      <div class="page-title">Eval Runs</div>
+      <div class="page-subtitle">Results from <code style="font-family:monospace;background:#f3f4f6;padding:1px 5px;border-radius:3px;">eval.run()</code> — sent here automatically by the SDK.</div>
+
+      <div class="sdk-callout">
+        Results land here automatically after your eval script runs. No extra setup needed — the SDK sends <code>EvalSuiteResult</code> to the server when <code>eval.run()</code> completes.
+      </div>
+
+      <div class="stats-row">
+        <div class="stat-card"><div class="stat-label">Total Runs</div><div class="stat-value blue">12</div></div>
+        <div class="stat-card"><div class="stat-label">Passing</div><div class="stat-value green">9</div></div>
+        <div class="stat-card"><div class="stat-label">Failing</div><div class="stat-value red">3</div></div>
+        <div class="stat-card"><div class="stat-label">Avg Pass Rate</div><div class="stat-value">78%</div></div>
+      </div>
+
+      <div class="filters">
+        <input class="search-input" placeholder="Search by run name or agent…" />
+        <select class="filter-select"><option>All Agents</option><option>travel_assistant</option><option>weather_agent</option></select>
+        <select class="filter-select"><option>All Results</option><option>Passing</option><option>Failing</option></select>
+      </div>
+
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Run Name</th>
+              <th>Agent</th>
+              <th>Pass Rate</th>
+              <th>Cases</th>
+              <th>Strategy Valid</th>
+              <th>Ran At</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="clickable" onclick="show('eval-detail')">
+              <td><strong>eval_handoff_v2</strong></td>
+              <td><span class="agent-chip">travel_assistant</span></td>
+              <td>
+                <div class="prog-wrap">
+                  <div class="prog-bar"><div class="prog-fill green" style="width:80%"></div></div>
+                  <span>4/5</span>
+                </div>
+              </td>
+              <td><span class="badge pass">4 pass</span> <span class="badge fail">1 fail</span></td>
+              <td><span class="badge pass">✓ handoff</span></td>
+              <td class="timestamp">2 min ago</td>
+            </tr>
+            <tr class="clickable" onclick="show('eval-detail')">
+              <td><strong>eval_handoff_v1</strong></td>
+              <td><span class="agent-chip">travel_assistant</span></td>
+              <td>
+                <div class="prog-wrap">
+                  <div class="prog-bar"><div class="prog-fill red" style="width:60%"></div></div>
+                  <span>3/5</span>
+                </div>
+              </td>
+              <td><span class="badge pass">3 pass</span> <span class="badge fail">2 fail</span></td>
+              <td><span class="badge pass">✓ handoff</span></td>
+              <td class="timestamp">Yesterday</td>
+            </tr>
+            <tr class="clickable" onclick="show('eval-detail')">
+              <td><strong>eval_weather_assertions</strong></td>
+              <td><span class="agent-chip">weather_agent</span></td>
+              <td>
+                <div class="prog-wrap">
+                  <div class="prog-bar"><div class="prog-fill green" style="width:100%"></div></div>
+                  <span>3/3</span>
+                </div>
+              </td>
+              <td><span class="badge pass">3 pass</span></td>
+              <td><span style="font-size:12px;color:#9e9e9e;">—</span></td>
+              <td class="timestamp">2 days ago</td>
+            </tr>
+            <tr class="clickable" onclick="show('eval-detail')">
+              <td><strong>eval_blahville_semantic</strong></td>
+              <td><span class="agent-chip">weather_agent</span></td>
+              <td>
+                <div class="prog-wrap">
+                  <div class="prog-bar"><div class="prog-fill green" style="width:67%"></div></div>
+                  <span>2/3</span>
+                </div>
+              </td>
+              <td><span class="badge pass">2 pass</span> <span class="badge fail">1 fail</span></td>
+              <td><span style="font-size:12px;color:#9e9e9e;">—</span></td>
+              <td class="timestamp">3 days ago</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ══ SCREEN: Eval Run Detail ══ -->
+    <div class="screen" id="screen-eval-detail">
+      <button class="back-btn" onclick="show('eval-runs')">← Back to Eval Runs</button>
+      <div class="page-title">eval_handoff_v2</div>
+
+      <div class="detail-card">
+        <div class="detail-meta">
+          <span><strong>Agent:</strong> <span class="agent-chip">travel_assistant</span></span>
+          <span><strong>Strategy:</strong> handoff</span>
+          <span><strong>Cases:</strong> 5</span>
+          <span><strong>Passed:</strong> 4</span>
+          <span><strong>Failed:</strong> 1</span>
+          <span><strong>Strategy valid:</strong> <span style="color:#16a34a;font-weight:600;">✓ all 5</span></span>
+          <span><strong>Ran by:</strong> eval_handoff_agent.py</span>
+          <span class="timestamp">2 min ago</span>
+        </div>
+      </div>
+
+      <!-- Cases -->
+      <div class="table-wrapper">
+        <div style="padding:12px 16px;border-bottom:1px solid #f0f0f0;font-size:13px;font-weight:600;color:#424242;">5 Cases</div>
+
+        <!-- Case 1: PASS, expandable -->
+        <div class="case-row">
+          <div class="case-header" onclick="toggleCase('c1')">
+            <div class="case-left">
+              <span class="badge pass">PASS</span>
+              <div>
+                <div class="case-name">weather_paris</div>
+                <div class="case-prompt">"What's the weather like in Paris right now?"</div>
+              </div>
+            </div>
+            <div class="case-right">
+              <span class="case-score">7/7 checks · semantic 0.92</span>
+              <span id="arr-c1" style="color:#9e9e9e;font-size:12px;">▾</span>
+            </div>
+          </div>
+          <div class="case-detail" id="c1">
+            <div class="assertion-row"><span class="a-pass">✓</span> Handed off to <strong>weather_specialist</strong></div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Tool called: <strong>get_weather</strong></div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Did not hand off to facts_specialist</div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Did not hand off to travel_specialist</div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Strategy validation: handoff occurred</div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Guardrail passed: <strong>content_safety</strong></div>
+            <div class="assertion-row"><span class="a-pass">✓</span> No errors</div>
+            <div class="semantic-box">
+              <div class="semantic-label">⬡ Semantic Score — LLM Judge</div>
+              <div class="semantic-score">0.92</div>
+              <div class="semantic-meta"><strong>Criterion:</strong> Response includes current temperature and weather conditions<br/><strong>Reasoning:</strong> Output clearly states "72°F and sunny" — fully satisfies the criterion.</div>
+            </div>
+            <div class="output-box"><div class="output-label">Agent Output</div>It's currently 72°F and sunny in Paris with light winds — a lovely day to explore!</div>
+          </div>
+        </div>
+
+        <!-- Case 2: FAIL, expandable -->
+        <div class="case-row" style="background:#fff9f9;">
+          <div class="case-header" onclick="toggleCase('c2')">
+            <div class="case-left">
+              <span class="badge fail">FAIL</span>
+              <div>
+                <div class="case-name">facts_tokyo</div>
+                <div class="case-prompt">"Tell me something interesting about Tokyo."</div>
+              </div>
+            </div>
+            <div class="case-right">
+              <span class="case-score" style="color:#dc2626;">4/6 checks · 2 failed</span>
+              <span id="arr-c2" style="color:#9e9e9e;font-size:12px;">▾</span>
+            </div>
+          </div>
+          <div class="case-detail" id="c2">
+            <div class="assertion-row"><span class="a-pass">✓</span> Handed off to <strong>facts_specialist</strong></div>
+            <div class="assertion-row">
+              <span class="a-fail">✗</span>
+              <div>
+                <div>Expected tool <strong>get_fun_fact</strong> — was not called</div>
+                <div class="a-fail-detail">Tool calls observed: none</div>
+              </div>
+            </div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Did not hand off to weather_specialist</div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Did not hand off to travel_specialist</div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Strategy validation: handoff occurred</div>
+            <div class="assertion-row">
+              <span class="a-fail">✗</span>
+              <div>
+                <div>Semantic score <strong>0.31</strong> — below threshold 0.7</div>
+                <div class="a-fail-detail">Criterion: Response mentions a specific fun fact about Tokyo</div>
+              </div>
+            </div>
+            <div class="semantic-box" style="background:#fff1f2;border:1px solid #fecaca;">
+              <div class="semantic-label" style="color:#dc2626;">⬡ Semantic Score — LLM Judge (FAIL)</div>
+              <div class="semantic-score" style="color:#dc2626;">0.31</div>
+              <div class="semantic-meta" style="color:#dc2626;"><strong>Criterion:</strong> Response mentions a specific fun fact about Tokyo<br/><strong>Reasoning:</strong> Output listed tourist spots but did not mention any fun or surprising fact specifically about Tokyo.</div>
+            </div>
+            <div class="output-box"><div class="output-label">Agent Output</div>Tokyo has incredible spots to visit — Asakusa district, Shibuya crossing, and TeamLab are must-sees!</div>
+          </div>
+        </div>
+
+        <!-- Case 3: PASS, collapsed -->
+        <div class="case-row">
+          <div class="case-header" onclick="toggleCase('c3')">
+            <div class="case-left">
+              <span class="badge pass">PASS</span>
+              <div>
+                <div class="case-name">travel_spots_barcelona</div>
+                <div class="case-prompt">"What are some great places to visit in Barcelona?"</div>
+              </div>
+            </div>
+            <div class="case-right">
+              <span class="case-score">6/6 checks · semantic 0.88</span>
+              <span id="arr-c3" style="color:#9e9e9e;font-size:12px;">▾</span>
+            </div>
+          </div>
+          <div class="case-detail" id="c3">
+            <div class="assertion-row"><span class="a-pass">✓</span> Handed off to <strong>travel_specialist</strong></div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Tool called: <strong>get_travel_spots</strong></div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Did not hand off to weather_specialist</div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Did not hand off to facts_specialist</div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Strategy validation: handoff occurred</div>
+            <div class="assertion-row"><span class="a-pass">✓</span> No errors</div>
+            <div class="semantic-box">
+              <div class="semantic-label">⬡ Semantic Score — LLM Judge</div>
+              <div class="semantic-score">0.88</div>
+              <div class="semantic-meta"><strong>Criterion:</strong> Response lists at least 2 specific sightseeing spots<br/><strong>Reasoning:</strong> Output recommends 3 named Barcelona locations clearly.</div>
+            </div>
+            <div class="output-box"><div class="output-label">Agent Output</div>Barcelona has so much to offer! Top spots: the Gothic Quarter, La Boqueria market, and the waterfront promenade.</div>
+          </div>
+        </div>
+
+        <!-- Cases 4 & 5: PASS, collapsed -->
+        <div class="case-row">
+          <div class="case-header" onclick="toggleCase('c4')">
+            <div class="case-left">
+              <span class="badge pass">PASS</span>
+              <div>
+                <div class="case-name">weather_new_york</div>
+                <div class="case-prompt">"Is it raining in New York today?"</div>
+              </div>
+            </div>
+            <div class="case-right">
+              <span class="case-score">6/6 checks · semantic 0.95</span>
+              <span id="arr-c4" style="color:#9e9e9e;font-size:12px;">▾</span>
+            </div>
+          </div>
+          <div class="case-detail" id="c4">
+            <div class="assertion-row"><span class="a-pass">✓</span> Handed off to <strong>weather_specialist</strong></div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Tool called: <strong>get_weather</strong></div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Did not hand off to facts_specialist</div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Did not hand off to travel_specialist</div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Strategy validation: handoff occurred</div>
+            <div class="assertion-row"><span class="a-pass">✓</span> No errors</div>
+            <div class="semantic-box">
+              <div class="semantic-label">⬡ Semantic Score — LLM Judge</div>
+              <div class="semantic-score">0.95</div>
+              <div class="semantic-meta"><strong>Criterion:</strong> Response directly answers yes/no about rain<br/><strong>Reasoning:</strong> Output clearly states "No rain expected today in New York" — directly answers the question.</div>
+            </div>
+            <div class="output-box"><div class="output-label">Agent Output</div>No rain expected today in New York — it's 61°F with partly cloudy skies.</div>
+          </div>
+        </div>
+
+        <div class="case-row">
+          <div class="case-header" onclick="toggleCase('c5')">
+            <div class="case-left">
+              <span class="badge pass">PASS</span>
+              <div>
+                <div class="case-name">travel_spots_rome</div>
+                <div class="case-prompt">"Where should I go sightseeing in Rome?"</div>
+              </div>
+            </div>
+            <div class="case-right">
+              <span class="case-score">6/6 checks · semantic 0.91</span>
+              <span id="arr-c5" style="color:#9e9e9e;font-size:12px;">▾</span>
+            </div>
+          </div>
+          <div class="case-detail" id="c5">
+            <div class="assertion-row"><span class="a-pass">✓</span> Handed off to <strong>travel_specialist</strong></div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Tool called: <strong>get_travel_spots</strong></div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Did not hand off to weather_specialist</div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Did not hand off to facts_specialist</div>
+            <div class="assertion-row"><span class="a-pass">✓</span> Strategy validation: handoff occurred</div>
+            <div class="assertion-row"><span class="a-pass">✓</span> No errors</div>
+            <div class="semantic-box">
+              <div class="semantic-label">⬡ Semantic Score — LLM Judge</div>
+              <div class="semantic-score">0.91</div>
+              <div class="semantic-meta"><strong>Criterion:</strong> Response recommends well-known Rome landmarks<br/><strong>Reasoning:</strong> Output names the Colosseum, Vatican, and Trevi Fountain — all well-known and correct.</div>
+            </div>
+            <div class="output-box"><div class="output-label">Agent Output</div>Rome is incredible! Must-sees: the Colosseum, Vatican City, and Trevi Fountain. Don't miss Trastevere for dinner.</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ══ SCREEN: Datasets (read-only) ══ -->
+    <div class="screen" id="screen-datasets">
+      <div class="page-title">Datasets</div>
+      <div class="page-subtitle">Read-only — pushed from code via <code style="font-family:monospace;background:#f3f4f6;padding:1px 5px;border-radius:3px;">runtime.push_dataset(cases)</code>. Full management coming in Phase 2.</div>
+
+      <div class="sdk-callout">
+        <strong>Push from code:</strong> <code>runtime.push_dataset("dataset_handoff", cases)</code><br/>
+        <strong>Pull in eval scripts:</strong> <code>cases = runtime.load_dataset("dataset_handoff")</code>
+      </div>
+
+      <div style="display:flex;gap:20px;">
+        <!-- Left: list -->
+        <div style="width:260px;min-width:260px;display:flex;flex-direction:column;gap:8px;">
+          <div style="font-size:13px;font-weight:600;color:#1a1a2e;margin-bottom:4px;">Your Datasets</div>
+          <div onclick="selectDs(this,'ds-handoff')" class="ds-item active" style="background:#fff;border:1px solid #5b6af0;border-radius:8px;padding:12px 14px;cursor:pointer;">
+            <div style="font-size:14px;font-weight:600;color:#1a1a2e;">dataset_handoff</div>
+            <div style="font-size:12px;color:#9e9e9e;margin-top:4px;display:flex;gap:8px;align-items:center;"><span class="agent-chip">travel_assistant</span><span>5 cases</span><span class="badge eval-tag" style="font-size:10px;padding:2px 6px;">handoff</span></div>
+          </div>
+          <div onclick="selectDs(this,'ds-weather')" class="ds-item" style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:12px 14px;cursor:pointer;">
+            <div style="font-size:14px;font-weight:600;color:#1a1a2e;">dataset_weather</div>
+            <div style="font-size:12px;color:#9e9e9e;margin-top:4px;display:flex;gap:8px;align-items:center;"><span class="agent-chip">weather_agent</span><span>3 cases</span></div>
+          </div>
+          <div onclick="selectDs(this,'ds-blahville')" class="ds-item" style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:12px 14px;cursor:pointer;">
+            <div style="font-size:14px;font-weight:600;color:#1a1a2e;">dataset_blahville</div>
+            <div style="font-size:12px;color:#9e9e9e;margin-top:4px;display:flex;gap:8px;align-items:center;"><span class="agent-chip">weather_agent</span><span>3 cases</span></div>
+          </div>
+        </div>
+
+        <!-- Right: cases table -->
+        <div style="flex:1;">
+          <!-- dataset_handoff -->
+          <div id="ds-handoff">
+            <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:14px 18px;margin-bottom:12px;">
+              <div style="font-size:15px;font-weight:700;color:#1a1a2e;margin-bottom:8px;">dataset_handoff</div>
+              <div style="display:flex;gap:20px;font-size:13px;color:#757575;">
+                <span><strong>Agent:</strong> <span class="agent-chip">travel_assistant</span></span>
+                <span><strong>Strategy:</strong> handoff</span>
+                <span><strong>Cases:</strong> 5</span>
+                <span><strong>Pushed by:</strong> eval_handoff_agent.py</span>
+              </div>
+            </div>
+            <div class="table-wrapper">
+              <table>
+                <thead><tr><th>Name</th><th>Prompt</th><th>Assertions</th><th>Semantic Criterion</th></tr></thead>
+                <tbody>
+                  <tr><td><strong>weather_paris</strong></td><td style="font-size:12px;max-width:180px;">What's the weather like in Paris?</td><td><span style="background:#ede9fe;color:#7c3aed;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">→ weather_specialist</span> <span style="background:#dbeafe;color:#1d4ed8;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">get_weather</span> <span style="background:#fee2e2;color:#dc2626;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">✗ facts, travel</span> <span style="background:#fff7ed;color:#c2410c;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">🛡 content_safety→pass</span></td><td style="font-size:12px;color:#6b7280;">Includes temperature and conditions</td></tr>
+                  <tr><td><strong>facts_tokyo</strong></td><td style="font-size:12px;max-width:180px;">Tell me something about Tokyo.</td><td><span style="background:#ede9fe;color:#7c3aed;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">→ facts_specialist</span> <span style="background:#dbeafe;color:#1d4ed8;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">get_fun_fact</span></td><td style="font-size:12px;color:#6b7280;">Mentions a specific Tokyo fun fact</td></tr>
+                  <tr><td><strong>travel_barcelona</strong></td><td style="font-size:12px;max-width:180px;">Great places to visit in Barcelona?</td><td><span style="background:#ede9fe;color:#7c3aed;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">→ travel_specialist</span> <span style="background:#dbeafe;color:#1d4ed8;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">get_travel_spots</span></td><td style="font-size:12px;color:#6b7280;">Lists ≥2 sightseeing spots</td></tr>
+                  <tr><td><strong>weather_new_york</strong></td><td style="font-size:12px;max-width:180px;">Is it raining in New York today?</td><td><span style="background:#ede9fe;color:#7c3aed;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">→ weather_specialist</span> <span style="background:#dbeafe;color:#1d4ed8;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">get_weather</span> <span style="background:#f0fdf4;color:#166534;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">≤5 turns</span></td><td style="font-size:12px;color:#6b7280;">Answers yes/no about rain directly</td></tr>
+                  <tr><td><strong>travel_rome</strong></td><td style="font-size:12px;max-width:180px;">Where to go sightseeing in Rome?</td><td><span style="background:#ede9fe;color:#7c3aed;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">→ travel_specialist</span> <span style="background:#dbeafe;color:#1d4ed8;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">get_travel_spots</span></td><td style="font-size:12px;color:#6b7280;">Recommends known Rome landmarks</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <!-- dataset_weather -->
+          <div id="ds-weather" style="display:none;">
+            <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:14px 18px;margin-bottom:12px;">
+              <div style="font-size:15px;font-weight:700;color:#1a1a2e;margin-bottom:8px;">dataset_weather</div>
+              <div style="display:flex;gap:20px;font-size:13px;color:#757575;"><span><strong>Agent:</strong> <span class="agent-chip">weather_agent</span></span><span><strong>Cases:</strong> 3</span><span><strong>Pushed by:</strong> eval_weather.py</span></div>
+            </div>
+            <div class="table-wrapper">
+              <table>
+                <thead><tr><th>Name</th><th>Prompt</th><th>Assertions</th><th>Semantic Criterion</th></tr></thead>
+                <tbody>
+                  <tr><td><strong>San Francisco</strong></td><td style="font-size:12px;">Tell me the weather and a fun fact about San Francisco.</td><td><span style="background:#dbeafe;color:#1d4ed8;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">get_weather</span> <span style="background:#dbeafe;color:#1d4ed8;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">get_fun_fact</span></td><td style="font-size:12px;color:#6b7280;">Output contains "72°F" and "San Francisco"</td></tr>
+                  <tr><td><strong>Tokyo</strong></td><td style="font-size:12px;">Tell me the weather and a fun fact about Tokyo.</td><td><span style="background:#dbeafe;color:#1d4ed8;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">get_weather</span> <span style="background:#dbeafe;color:#1d4ed8;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">get_fun_fact</span></td><td style="font-size:12px;color:#6b7280;">Output contains "72°F" and "Tokyo"</td></tr>
+                  <tr><td><strong>Blahville</strong></td><td style="font-size:12px;">Tell me the weather and a fun fact about Blahville.</td><td><span style="background:#dbeafe;color:#1d4ed8;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">get_weather</span> <span style="background:#dbeafe;color:#1d4ed8;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600;font-family:monospace;display:inline-block;margin:1px;">get_fun_fact</span></td><td style="font-size:12px;color:#6b7280;">Output should indicate Blahville is not a real or known city</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <!-- dataset_blahville placeholder -->
+          <div id="ds-blahville" style="display:none;">
+            <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:14px 18px;margin-bottom:12px;">
+              <div style="font-size:15px;font-weight:700;color:#1a1a2e;margin-bottom:8px;">dataset_blahville</div>
+              <div style="display:flex;gap:20px;font-size:13px;color:#757575;"><span><strong>Agent:</strong> <span class="agent-chip">weather_agent</span></span><span><strong>Cases:</strong> 3</span></div>
+            </div>
+            <div class="table-wrapper"><table><thead><tr><th>Name</th><th>Prompt</th><th>Assertions</th><th>Semantic Criterion</th></tr></thead><tbody><tr><td colspan="4" style="text-align:center;color:#9e9e9e;padding:20px;">Same cases as dataset_weather — select dataset_weather to see them.</td></tr></tbody></table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ SCREEN: Agent Executions ══ -->
+    <div class="screen" id="screen-executions">
+      <div class="page-title">Agent Executions</div>
+      <div class="page-subtitle">Production runs only. Eval runs are hidden by default.</div>
+
+      <div class="callout purple">
+        <span style="font-size:16px;">⬡</span>
+        <div>Runs from <code>CorrectnessEval</code> are tagged <code>run_type=eval</code> and hidden here by default. <span style="cursor:pointer;font-weight:700;text-decoration:underline;" onclick="show('eval-runs')">See them in Experiments → Eval Runs.</span> Toggle below to show them here temporarily.</div>
+      </div>
+
+      <div class="filters">
+        <input class="search-input" placeholder="Search by agent or execution ID…" />
+        <select class="filter-select"><option>All Agents</option><option>travel_assistant</option><option>weather_agent</option></select>
+        <select class="filter-select"><option>All Status</option><option>Completed</option><option>Failed</option></select>
+        <div class="toggle-row" onclick="toggleEvalRows(this)">
+          <div class="toggle-switch" id="eval-toggle"></div>
+          <span>Show eval runs</span>
+        </div>
+      </div>
+
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr><th>Execution ID</th><th>Agent</th><th>Status</th><th>Type</th><th>Duration</th><th>Started</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>wf-a1b2c3</code></td><td><span class="agent-chip">travel_assistant</span></td><td><span class="badge pass">Completed</span></td><td><span class="badge prod">Production</span></td><td>3.2s</td><td class="timestamp">5 min ago</td></tr>
+            <tr><td><code>wf-d4e5f6</code></td><td><span class="agent-chip">weather_agent</span></td><td><span class="badge pass">Completed</span></td><td><span class="badge prod">Production</span></td><td>2.8s</td><td class="timestamp">12 min ago</td></tr>
+            <tr><td><code>wf-g7h8i9</code></td><td><span class="agent-chip">support_agent</span></td><td><span class="badge fail">Failed</span></td><td><span class="badge prod">Production</span></td><td>1.1s</td><td class="timestamp">34 min ago</td></tr>
+            <tr class="eval-row" id="eval-r1" style="display:none;"><td><code>wf-j1k2l3</code></td><td><span class="agent-chip">travel_assistant</span></td><td><span class="badge pass">Completed</span></td><td><span class="badge eval-tag">⬡ eval</span></td><td>4.1s</td><td class="timestamp">2 min ago</td></tr>
+            <tr class="eval-row" id="eval-r2" style="display:none;"><td><code>wf-m4n5o6</code></td><td><span class="agent-chip">travel_assistant</span></td><td><span class="badge pass">Completed</span></td><td><span class="badge eval-tag">⬡ eval</span></td><td>3.9s</td><td class="timestamp">2 min ago</td></tr>
+            <tr class="eval-row" id="eval-r3" style="display:none;"><td><code>wf-p7q8r9</code></td><td><span class="agent-chip">travel_assistant</span></td><td><span class="badge pass">Completed</span></td><td><span class="badge eval-tag">⬡ eval</span></td><td>3.7s</td><td class="timestamp">2 min ago</td></tr>
+            <tr><td><code>wf-s1t2u3</code></td><td><span class="agent-chip">weather_agent</span></td><td><span class="badge running">Running</span></td><td><span class="badge prod">Production</span></td><td>—</td><td class="timestamp">Just now</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="margin-top:10px;font-size:12px;color:#9e9e9e;">Showing 4 production runs · 3 eval runs hidden — <span style="color:#5b6af0;cursor:pointer;" onclick="show('eval-runs')">view in Experiments</span></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  const screens = {
+    'eval-runs':  { id: 'screen-eval-runs',  title: 'Eval Runs',        nav: 'nav-eval-runs' },
+    'eval-detail':{ id: 'screen-eval-detail', title: 'Eval Run Detail',  nav: 'nav-eval-runs' },
+    'datasets':   { id: 'screen-datasets',   title: 'Datasets',         nav: 'nav-datasets' },
+    'executions': { id: 'screen-executions',  title: 'Agent Executions', nav: 'nav-executions' },
+  };
+
+  function selectDs(card, showId) {
+    document.querySelectorAll('.ds-item').forEach(c => {
+      c.style.borderColor = '#e0e0e0';
+    });
+    card.style.borderColor = '#5b6af0';
+    ['ds-handoff','ds-weather','ds-blahville'].forEach(id => {
+      document.getElementById(id).style.display = id === showId ? '' : 'none';
+    });
+  }
+
+  function show(name) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('.nav-sub').forEach(n => n.classList.remove('active'));
+    const s = screens[name];
+    document.getElementById(s.id).classList.add('active');
+    document.getElementById('topbar-title').textContent = s.title;
+    if (s.nav) document.getElementById(s.nav).classList.add('active');
+  }
+
+  function toggleCase(id) {
+    const detail = document.getElementById(id);
+    const arrow  = document.getElementById('arr-' + id);
+    const open   = detail.classList.contains('open');
+    detail.classList.toggle('open', !open);
+    arrow.textContent = open ? '▾' : '▴';
+  }
+
+  let evalVisible = false;
+  function toggleEvalRows(row) {
+    evalVisible = !evalVisible;
+    ['eval-r1','eval-r2','eval-r3'].forEach(id => {
+      document.getElementById(id).style.display = evalVisible ? '' : 'none';
+    });
+    const sw = document.getElementById('eval-toggle');
+    sw.classList.toggle('on', evalVisible);
+  }
+</script>
+</body>
+</html>
