@@ -73,6 +73,26 @@ SAMPLE_RECEIPTS = [
         "id": "msg_5544",
         "subject": "iCloud+ storage",
         "body": "iCloud+ ($2.99) renewed Apr 1. Storage used: 87%.",
+    },
+    {                                                                                      
+        "id": "msg_1001",                                                                  
+        "subject": "Your order has shipped!",                                            
+        "body": "Your Amazon order #112-3456789 has shipped. Estimated delivery: May 10.", 
+    },                                                                                     
+    {                                                                                      
+        "id": "msg_1002",                                                                  
+        "subject": "Maria, someone liked your post",                                       
+        "body": "John Doe liked your photo on Instagram.",                               
+    },                                                                                     
+    {
+        "id": "msg_1003",                                                                  
+        "subject": "Your flight is confirmed",                                           
+        "body": "Booking confirmation for AA1234 New York to LA on May 15. Seat 14A.",     
+    },                                                                                     
+    {                                                                                      
+        "id": "msg_1004",                                                                  
+        "subject": "Weekly newsletter: top stories this week",                           
+        "body": "Here are the top stories from The Hustle this week: AI is changing everything...",                                                                            
     }
 ]
 
