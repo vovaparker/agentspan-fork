@@ -4,11 +4,13 @@
 // Credentials — External worker credential resolution.
 //
 // Demonstrates:
-//   - [Tool(External = true, Credentials = ["GITHUB_TOKEN"])] declares
-//     credentials that the Agentspan server resolves for an external worker
+//   - External tool declared as a ToolDef with External = true and
+//     Credentials = ["GITHUB_TOKEN"]. In C#, external tools must be
+//     created as ToolDef objects directly (unlike local tools which use
+//     [Tool] attributes and ToolRegistry.FromInstance).
 //   - The external worker calls AgentHttpClient.ResolveCredentialsAsync()
-//     to fetch the plaintext credential value at runtime
-//   - Works for workers running in separate processes, containers, or machines
+//     to fetch the plaintext credential value at runtime.
+//   - Works for workers running in separate processes, containers, or machines.
 //
 // Two sides are shown:
 //   1. Agent definition (declares the external tool with credentials)
@@ -23,15 +25,43 @@
 //   - GITHUB_TOKEN stored via `agentspan credentials set`
 //   - An external worker polling for "github_lookup" tasks (see comments below)
 
+using System.Text.Json.Nodes;
 using Agentspan;
 using Agentspan.Examples;
+
+// ── External tool declaration ─────────────────────────────────
+//
+// External tools are created as ToolDef objects with External = true.
+// They have no local handler — execution dispatches to an external
+// Conductor worker process.
+
+var githubLookup = new ToolDef
+{
+    Name        = "github_lookup",
+    Description = "Look up a GitHub user's public profile. Runs on an external worker.",
+    External    = true,
+    Credentials = ["GITHUB_TOKEN"],
+    InputSchema = new JsonObject
+    {
+        ["type"]       = "object",
+        ["properties"] = new JsonObject
+        {
+            ["username"] = new JsonObject
+            {
+                ["type"]        = "string",
+                ["description"] = "The GitHub username to look up.",
+            },
+        },
+        ["required"] = new JsonArray { "username" },
+    },
+};
 
 // ── Agent side: declare external tool with credentials ──────────
 
 var agent = new Agent("external_cred_agent_16h")
 {
     Model        = Settings.LlmModel,
-    Tools        = ToolRegistry.FromInstance(new ExternalGithubTools()),
+    Tools        = [githubLookup],
     Instructions =
         "You can look up GitHub users. Use the github_lookup tool. " +
         "GITHUB_TOKEN is automatically resolved by the external worker.",
@@ -60,14 +90,11 @@ result.PrintResult();
  *
  *   using Agentspan;
  *   using OrchestratorSDK.Client;           // Conductor .NET SDK
- *   using OrchestratorSDK.Client.Worker;
  *   using System.Net.Http.Headers;
  *   using System.Text.Json;
  *
  *   var serverUrl = Environment.GetEnvironmentVariable("AGENTSPAN_SERVER_URL")!;
  *   var http = new AgentHttpClient(serverUrl);
- *
- *   // Poll Conductor for tasks named "github_lookup"
  *   var taskClient = new TaskResourceApi(new Configuration { BasePath = serverUrl });
  *
  *   while (true)
@@ -100,15 +127,3 @@ result.PrintResult();
  *       // ... complete the Conductor task with the response data
  *   }
  */
-
-// ── Tool stub (agent side) ────────────────────────────────────────────
-
-internal sealed class ExternalGithubTools
-{
-    // External = true  → the method body is never called locally.
-    // Credentials = ["GITHUB_TOKEN"] → the server resolves this credential
-    //   and makes it available to the external worker via __agentspan_ctx__.
-    [Tool("Look up a GitHub user's public profile. Runs on an external worker.",
-          External = true, Credentials = ["GITHUB_TOKEN"])]
-    public Dictionary<string, object> GithubLookup(string username) => default!;
-}
