@@ -34,6 +34,10 @@ import dev.agentspan.runtime.model.StartRequest;
 import dev.agentspan.runtime.model.StartResponse;
 import dev.agentspan.runtime.model.TaskListResponse;
 import dev.agentspan.runtime.service.AgentDagService;
+import dev.agentspan.runtime.service.ExecutionHistoryService;
+import dev.agentspan.runtime.dto.BulkDeleteRequest;
+import dev.agentspan.runtime.dto.BulkDeleteResponse;
+import org.springframework.http.HttpStatus;
 import dev.agentspan.runtime.service.AgentService;
 
 import lombok.RequiredArgsConstructor;
