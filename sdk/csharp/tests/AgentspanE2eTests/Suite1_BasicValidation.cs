@@ -421,10 +421,8 @@ public sealed class Suite1_BasicValidation
     // ── 1.11  Tool retry configuration ────────────────────────────────────
 
     [SkippableFact]
-    public async Task ToolRetryConfig_SerializedInPlan()
+    public void ToolRetryConfig_SerializedInAgentConfig()
     {
-        _fixture.RequireServer();
-
         var tools = ToolRegistry.FromInstance(new S1RetryToolHost());
         var agent = new Agent("s1_retry_tools")
         {
@@ -432,14 +430,22 @@ public sealed class Suite1_BasicValidation
             Tools = tools,
         };
 
-        await using var runtime = new AgentRuntime();
-        var plan = await runtime.PlanAsync(agent);
-        var ad   = E2eHelpers.GetAgentDef(plan);
+        var config = SerializeAgentForTest(agent);
+        var toolsArr = config["tools"]?.AsArray();
+        Assert.NotNull(toolsArr);
 
-        var expTool = E2eHelpers.GetTool(ad, "retry_exp_tool");
-        Assert.Equal(5,                      expTool["retryCount"]?.GetValue<int>());
+        var expTool = toolsArr!.First(t => t?["name"]?.GetValue<string>() == "retry_exp_tool");
+        Assert.NotNull(expTool);
+        Assert.Equal(5,                      expTool!["retryCount"]?.GetValue<int>());
         Assert.Equal(10,                     expTool["retryDelaySeconds"]?.GetValue<int>());
         Assert.Equal("exponential_backoff",  expTool["retryPolicy"]?.GetValue<string>());
+    }
+
+    private static System.Text.Json.Nodes.JsonObject SerializeAgentForTest(Agent agent)
+    {
+        var t  = typeof(Agent).Assembly.GetType("Agentspan.AgentConfigSerializer", throwOnError: true)!;
+        var mi = t.GetMethod("SerializeAgent", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+        return (System.Text.Json.Nodes.JsonObject)mi.Invoke(null, new object[] { agent })!;
     }
 }
 
