@@ -102,10 +102,6 @@ func logFile() string {
 
 func runServerStart(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
-	dir := serverDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create server dir: %w", err)
-	}
 
 	// Validate JDK before doing anything
 	javaOk, javaVersion := serverCheckJava()
@@ -120,6 +116,11 @@ func runServerStart(cmd *cobra.Command, args []string) error {
 			"Java is not installed. The Agentspan server requires Java 21+.\n" +
 				"  Install: https://adoptium.net/\n" +
 				"  Run 'agentspan doctor' for full diagnostics.")
+	}
+
+	dir := serverDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create server dir: %w", err)
 	}
 
 	var jarPath string
