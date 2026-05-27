@@ -125,6 +125,12 @@ export class AgentRuntime {
     if (runId) {
       payload.runId = runId;
     }
+    if (options?.plan !== undefined) {
+      const { coercePlan } = await import("./plans.js");
+      // Server reads ${workflow.input.static_plan} as the Case-0 plan source
+      // — wins over the planner LLM's output. See plans.ts for wire shape.
+      payload.static_plan = coercePlan(options.plan as Parameters<typeof coercePlan>[0]);
+    }
 
     // Register tool workers with domain (for stateful isolation)
     await this._registerToolWorkers(nativeAgent, runId);
@@ -243,6 +249,10 @@ export class AgentRuntime {
     }
     if (runId) {
       payload.runId = runId;
+    }
+    if (options?.plan !== undefined) {
+      const { coercePlan } = await import("./plans.js");
+      payload.static_plan = coercePlan(options.plan as Parameters<typeof coercePlan>[0]);
     }
 
     // Register tool workers with domain
@@ -897,7 +907,7 @@ export class AgentRuntime {
 
   /**
    * Register a termination condition worker.
-   * Server dispatches {agent}_termination with {result, iteration, messages}.
+   * Server dispatches {agent}_termination with {result, iteration}.
    * Worker returns {should_continue, reason}.
    */
   private async _registerTerminationWorker(
@@ -928,7 +938,8 @@ export class AgentRuntime {
     const taskName = gDef.taskName!;
     const fn = gDef.func!;
     this.workerManager.addWorker(taskName, async (inputData) => {
-      const content = String(inputData["content"] ?? "");
+      const raw = inputData["content"] ?? "";
+      const content = typeof raw === "object" ? JSON.stringify(raw) : String(raw);
       try {
         const result = await fn(content);
         return {
@@ -953,7 +964,7 @@ export class AgentRuntime {
 
   /**
    * Register a stopWhen callback worker.
-   * Server dispatches {agent}_stop_when with {result, iteration}.
+   * Server dispatches {agent}_stop_when with {result, iteration, messages}.
    * Worker returns {should_continue}.
    */
   private async _registerStopWhenWorker(
