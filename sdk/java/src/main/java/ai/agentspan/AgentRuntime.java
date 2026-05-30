@@ -11,6 +11,7 @@ import ai.agentspan.model.AgentHandle;
 import ai.agentspan.model.AgentResult;
 import ai.agentspan.model.AgentStream;
 import ai.agentspan.model.ToolDef;
+import ai.agentspan.skill.Skill;
 import ai.agentspan.termination.AndTermination;
 import ai.agentspan.termination.MaxMessageTermination;
 import ai.agentspan.termination.OrTermination;
@@ -90,7 +91,19 @@ public class AgentRuntime implements AutoCloseable {
     public Map<String, Object> plan(Agent agent) {
         Map<String, Object> agentConfig = serializer.serialize(agent);
         logger.debug("Compiling agent '{}'", agent.getName());
-        Map<String, Object> result = httpApi.compileAgent(agentConfig);
+        // Same framework-dispatch as startAsync / deploy: framework-backed
+        // agents (openai / google_adk / langgraph) need to round-trip through
+        // the server normalizer or compile fails on a missing top-level model.
+        String framework = agent.getFramework();
+        boolean isFramework = framework != null && !framework.isEmpty();
+        Map<String, Object> payload = new java.util.HashMap<>();
+        if (isFramework) {
+            payload.put("framework", framework);
+            payload.put("rawConfig", agentConfig);
+        } else {
+            payload.put("agentConfig", agentConfig);
+        }
+        Map<String, Object> result = httpApi.compileAgent(payload);
         logger.info("Agent '{}' compiled successfully", agent.getName());
         return result;
     }
@@ -104,6 +117,25 @@ public class AgentRuntime implements AutoCloseable {
      */
     public AgentResult run(Agent agent, String prompt) {
         return runAsync(agent, prompt).join();
+    }
+
+    /**
+     * Execute a {@code Strategy.PLAN_EXECUTE} harness with a deterministic
+     * {@link ai.agentspan.plans.Plan} — skips the planner LLM entirely.
+     *
+     * <p>The SDK forwards the plan as {@code static_plan} on the start
+     * payload; the server's PAC extract_json picks it up as Case-0
+     * (highest priority) and discards whatever the planner sub-agent
+     * emits. Use this for deterministic pipelines, replays of a
+     * previously-emitted plan, or testing.
+     *
+     * @param agent  the PLAN_EXECUTE harness
+     * @param prompt the user's input message
+     * @param plan   the deterministic plan to execute
+     * @return the agent result
+     */
+    public AgentResult run(Agent agent, String prompt, ai.agentspan.plans.Plan plan) {
+        return runAsync(agent, prompt, plan).join();
     }
 
     /**
@@ -138,10 +170,18 @@ public class AgentRuntime implements AutoCloseable {
      * @return a CompletableFuture that resolves to the agent result
      */
     public CompletableFuture<AgentResult> runAsync(Agent agent, String prompt) {
+        return runAsync(agent, prompt, null);
+    }
+
+    /**
+     * Async variant of {@link #run(Agent, String, ai.agentspan.plans.Plan)}.
+     */
+    public CompletableFuture<AgentResult> runAsync(
+            Agent agent, String prompt, ai.agentspan.plans.Plan plan) {
         prepareWorkers(agent);
         workerManager.startAll();
 
-        return startAsync(agent, prompt).thenCompose(handle ->
+        return startAsync(agent, prompt, plan).thenCompose(handle ->
             CompletableFuture.supplyAsync(() -> handle.waitForResult())
         );
     }
@@ -154,7 +194,27 @@ public class AgentRuntime implements AutoCloseable {
      * @return a CompletableFuture that resolves to an AgentHandle
      */
     public CompletableFuture<AgentHandle> startAsync(Agent agent, String prompt) {
-        prepareWorkers(agent);
+        return startAsync(agent, prompt, null);
+    }
+
+    /**
+     * Async variant that forwards a deterministic {@link ai.agentspan.plans.Plan}
+     * to the server as {@code static_plan}. Only meaningful for
+     * {@code Strategy.PLAN_EXECUTE} harnesses; ignored otherwise.
+     */
+    public CompletableFuture<AgentHandle> startAsync(
+            Agent agent, String prompt, ai.agentspan.plans.Plan plan) {
+        // Stateful agents get a per-execution domain UUID. The server uses it
+        // as taskToDomain for every worker task in this run; local workers are
+        // registered under the same domain so they poll the per-execution
+        // queue. Without this, concurrent stateful runs share a single domain
+        // queue and can dequeue each other's tasks.
+        // Mirrors Python runtime._has_stateful_tools + run_id = uuid.uuid4().
+        final String runId = hasStatefulTools(agent)
+            ? java.util.UUID.randomUUID().toString().replace("-", "")
+            : null;
+        final Map<String, Object> staticPlan = plan == null ? null : plan.toJson();
+        prepareWorkers(agent, runId);
         workerManager.startAll();
 
         return CompletableFuture.supplyAsync(() -> {
@@ -163,12 +223,44 @@ public class AgentRuntime implements AutoCloseable {
 
             logger.debug("Starting agent '{}' with prompt: {}", agent.getName(), prompt);
 
-            Map<String, Object> response = httpApi.startAgent(agentConfig, prompt, sessionId);
-            String workflowId = extractWorkflowId(response);
+            // Framework-backed agents (openai, google_adk, langgraph, vercel_ai, skill)
+            // must be sent via the server's framework+rawConfig fields so the
+            // matching normalizer runs server-side.
+            String framework = agent.getFramework();
+            boolean isFramework = framework != null && !framework.isEmpty();
+            Map<String, Object> payload = new java.util.HashMap<>();
+            if (isFramework) {
+                payload.put("framework", framework);
+                payload.put("rawConfig", agentConfig);
+            } else {
+                payload.put("agentConfig", agentConfig);
+            }
+            payload.put("prompt", prompt);
+            if (sessionId != null && !sessionId.isEmpty()) payload.put("sessionId", sessionId);
+            if (runId != null && !runId.isEmpty()) payload.put("runId", runId);
+            if (staticPlan != null) payload.put("static_plan", staticPlan);
+            Map<String, Object> response = httpApi.startAgent(payload);
+            String executionId = extractExecutionId(response);
 
-            logger.info("Agent '{}' started with workflow ID: {}", agent.getName(), workflowId);
-            return new AgentHandle(workflowId, httpApi);
+            logger.info("Agent '{}' started with execution ID: {}", agent.getName(), executionId);
+            return new AgentHandle(executionId, httpApi);
         });
+    }
+
+    private static boolean hasStatefulTools(Agent agent) {
+        if (agent.isStateful()) return true;
+        if (agent.getTools() != null) {
+            for (ToolDef t : agent.getTools()) {
+                if (t != null && t.isStateful()) return true;
+            }
+        }
+        if (agent.getAgents() != null) {
+            for (Agent sub : agent.getAgents()) {
+                if (hasStatefulTools(sub)) return true;
+            }
+        }
+        if (agent.getRouter() != null && hasStatefulTools(agent.getRouter())) return true;
+        return false;
     }
 
     /**
@@ -183,13 +275,13 @@ public class AgentRuntime implements AutoCloseable {
         workerManager.startAll();
 
         return startAsync(agent, prompt).thenApply(handle -> {
-            String workflowId = handle.getWorkflowId();
-            String sseUrl = config.getServerUrl() + "/api/agent/stream/" + workflowId;
+            String executionId = handle.getExecutionId();
+            String sseUrl = config.getServerUrl() + "/api/agent/stream/" + executionId;
 
             SseClient sseClient = new SseClient(sseUrl, config, httpApi.getHttpClient());
             sseClient.connect();
 
-            return new AgentStream(workflowId, sseClient, httpApi);
+            return new AgentStream(executionId, sseClient, httpApi);
         });
     }
 
@@ -206,11 +298,25 @@ public class AgentRuntime implements AutoCloseable {
      * @return list of DeploymentInfo, one per deployed agent
      */
     public List<ai.agentspan.model.DeploymentInfo> deploy(Agent... agents) {
+        if (agents == null || agents.length == 0) {
+            throw new IllegalArgumentException("deploy() requires at least one agent");
+        }
         List<ai.agentspan.model.DeploymentInfo> results = new ArrayList<>();
         for (Agent agent : agents) {
             Map<String, Object> agentConfig = serializer.serialize(agent);
             Map<String, Object> payload = new java.util.LinkedHashMap<>();
-            payload.put("agentConfig", agentConfig);
+            // Framework-backed agents (openai, google_adk, langgraph, skill) ship via
+            // {framework, rawConfig} so the matching server-side normalizer
+            // runs — same dispatch as startAsync. Without this, the server
+            // tries to compile the agent as a native Agentspan agent and
+            // fails on a missing model / null taskDef name.
+            String framework = agent.getFramework();
+            if (framework != null && !framework.isEmpty()) {
+                payload.put("framework", framework);
+                payload.put("rawConfig", agentConfig);
+            } else {
+                payload.put("agentConfig", agentConfig);
+            }
             Map<String, Object> resp = httpApi.deployAgent(payload);
             String registeredName = resp.getOrDefault("agentName", agent.getName()).toString();
             results.add(new ai.agentspan.model.DeploymentInfo(registeredName, agent.getName()));
@@ -238,6 +344,11 @@ public class AgentRuntime implements AutoCloseable {
      * @param agents agents whose workers should be served
      */
     public void serve(Agent... agents) {
+        if (agents == null || agents.length == 0) {
+            throw new IllegalArgumentException(
+                    "serve() requires at least one agent — without one, no workers would "
+                    + "register and the call would block forever.");
+        }
         for (Agent agent : agents) {
             prepareWorkers(agent);
         }
@@ -299,7 +410,31 @@ public class AgentRuntime implements AutoCloseable {
      *
      * @param agent the agent (root or sub-agent)
      */
+    /**
+     * Like {@link #prepareWorkers(Agent)} but registers every worker under the
+     * given per-execution domain. Used for stateful agents so concurrent
+     * runs don't share a worker queue.
+     */
+    public void prepareWorkers(Agent agent, String domain) {
+        if (domain == null || domain.isEmpty()) {
+            prepareWorkers(agent);
+            return;
+        }
+        workerManager.setCurrentDomain(domain);
+        try {
+            prepareWorkers(agent);
+        } finally {
+            workerManager.setCurrentDomain(null);
+        }
+    }
+
     public void prepareWorkers(Agent agent) {
+        if ("skill".equals(agent.getFramework())) {
+            for (Skill.SkillWorker worker : Skill.createSkillWorkers(agent)) {
+                workerManager.register(worker.getName(), worker.getFunc());
+            }
+        }
+
         // Register tools for this agent
         for (ToolDef tool : agent.getTools()) {
             if (tool.getFunc() != null && "worker".equals(tool.getToolType())) {
@@ -701,11 +836,11 @@ public class AgentRuntime implements AutoCloseable {
         return result;
     }
 
-    private String extractWorkflowId(Map<String, Object> response) {
-        // Try several possible keys — server renamed workflowId → executionId
+    private String extractExecutionId(Map<String, Object> response) {
         Object id = response.get("executionId");
         if (id != null) return id.toString();
 
+        // Legacy fallback — older server versions may still return workflowId
         id = response.get("workflowId");
         if (id != null) return id.toString();
 
@@ -715,11 +850,10 @@ public class AgentRuntime implements AutoCloseable {
         id = response.get("correlationId");
         if (id != null) return id.toString();
 
-        // If only one value in the map, use it
         if (response.size() == 1) {
             return response.values().iterator().next().toString();
         }
 
-        throw new RuntimeException("Cannot extract workflow ID from response: " + response);
+        throw new RuntimeException("Cannot extract execution ID from response: " + response);
     }
 }

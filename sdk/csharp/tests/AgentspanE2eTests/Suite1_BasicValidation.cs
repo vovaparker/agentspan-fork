@@ -291,14 +291,15 @@ public sealed class Suite1_BasicValidation
 
         var cases = new (Strategy strategy, string expected)[]
         {
-            (Strategy.Handoff,    "handoff"),
-            (Strategy.Sequential, "sequential"),
-            (Strategy.Parallel,   "parallel"),
-            (Strategy.Router,     "router"),
-            (Strategy.RoundRobin, "round_robin"),
-            (Strategy.Random,     "random"),
-            (Strategy.Swarm,      "swarm"),
-            (Strategy.Manual,     "manual"),
+            (Strategy.Handoff,     "handoff"),
+            (Strategy.Sequential,  "sequential"),
+            (Strategy.Parallel,    "parallel"),
+            (Strategy.Router,      "router"),
+            (Strategy.RoundRobin,  "round_robin"),
+            (Strategy.Random,      "random"),
+            (Strategy.Swarm,       "swarm"),
+            (Strategy.Manual,      "manual"),
+            (Strategy.PlanExecute, "plan_execute"),
         };
 
         foreach (var (strategy, expected) in cases)
@@ -314,6 +315,15 @@ public sealed class Suite1_BasicValidation
                 {
                     Model = Settings.LlmModel, Agents = [c1, c2],
                     Strategy = strategy, Router = router,
+                };
+            }
+            else if (strategy == Strategy.PlanExecute)
+            {
+                // PlanExecute uses named slots (planner=) rather than agents=[…]
+                var planner = new Agent($"s1_strat_{expected}_planner") { Model = Settings.LlmModel };
+                parent = new Agent($"s1_strat_{expected}_parent")
+                {
+                    Model = Settings.LlmModel, Strategy = strategy, Planner = planner,
                 };
             }
             else
@@ -417,6 +427,36 @@ public sealed class Suite1_BasicValidation
         Assert.Equal("http",   E2eHelpers.GetToolType(adMixed, "lookup_price"));
         Assert.Equal("worker", E2eHelpers.GetToolType(adMixed, "get_greeting"));
     }
+
+    // ── 1.11  Tool retry configuration ────────────────────────────────────
+
+    [SkippableFact]
+    public void ToolRetryConfig_SerializedInAgentConfig()
+    {
+        var tools = ToolRegistry.FromInstance(new S1RetryToolHost());
+        var agent = new Agent("s1_retry_tools")
+        {
+            Model = Settings.LlmModel,
+            Tools = tools,
+        };
+
+        var config = SerializeAgentForTest(agent);
+        var toolsArr = config["tools"]?.AsArray();
+        Assert.NotNull(toolsArr);
+
+        var expTool = toolsArr!.First(t => t?["name"]?.GetValue<string>() == "retry_exp_tool");
+        Assert.NotNull(expTool);
+        Assert.Equal(5,                      expTool!["retryCount"]?.GetValue<int>());
+        Assert.Equal(10,                     expTool["retryDelaySeconds"]?.GetValue<int>());
+        Assert.Equal("exponential_backoff",  expTool["retryPolicy"]?.GetValue<string>());
+    }
+
+    private static System.Text.Json.Nodes.JsonObject SerializeAgentForTest(Agent agent)
+    {
+        var t  = typeof(Agent).Assembly.GetType("Agentspan.AgentConfigSerializer", throwOnError: true)!;
+        var mi = t.GetMethod("SerializeAgent", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+        return (System.Text.Json.Nodes.JsonObject)mi.Invoke(null, new object[] { agent })!;
+    }
 }
 
 // ── Tool and guardrail hosts ──────────────────────────────────────────────────
@@ -472,4 +512,10 @@ internal sealed class S1ToolWithGuardrailHost
 {
     [Tool("Execute a database query.")]
     public string RunQuery(string query) => $"Results for: {query}";
+}
+
+internal sealed class S1RetryToolHost
+{
+    [Tool("Tool with exponential backoff.", RetryCount = 5, RetryDelaySeconds = 10, RetryPolicy = "exponential_backoff")]
+    public string RetryExpTool(string input) => input;
 }

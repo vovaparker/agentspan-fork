@@ -45,6 +45,72 @@ public class AgentConfigSerializer {
             return skillMap;
         }
 
+        // OpenAI Agents SDK and Google ADK use the framework+rawConfig path.
+        // The server normalizers (OpenAINormalizer, GoogleADKNormalizer) read
+        // the raw config map directly. We also emit the tools list (when present)
+        // so the SDK worker poller registers handlers for any locally-defined
+        // @Tool-annotated worker tools the agent declares.
+        String fw = agent.getFramework();
+        if ("openai".equals(fw) || "google_adk".equals(fw)) {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("name", agent.getName());
+            if (agent.getModel() != null && !agent.getModel().isEmpty()) {
+                map.put("model", agent.getModel());
+            }
+            // OpenAI uses `instructions`; ADK uses `instruction` (singular).
+            if (agent.getInstructions() != null && !agent.getInstructions().isEmpty()) {
+                map.put("google_adk".equals(fw) ? "instruction" : "instructions",
+                        agent.getInstructions());
+            }
+            // Tools: framework normalizers (OpenAINormalizer, GoogleADKNormalizer)
+            // expect the worker_ref shape `{_worker_ref, description, parameters}`
+            // — matching Python's frameworks/serializer.py. The default
+            // `{name, description, inputSchema, toolType}` shape gets dropped on
+            // the floor by these normalizers (no _worker_ref → no schema → LLM
+            // sees a paramless tool → calls it with empty inputData → NPE in
+            // the worker). The SDK still registers worker handlers separately.
+            if (agent.getTools() != null && !agent.getTools().isEmpty()) {
+                List<Map<String, Object>> toolsList = new ArrayList<>();
+                for (ToolDef tool : agent.getTools()) {
+                    // Agent-as-tool: emit `{_type: "AgentTool", name, description, agent}`
+                    // so the framework normalizer can compile this as a SUB_WORKFLOW
+                    // task (toolType=agent_tool). Matches Python's
+                    // _try_extract_agent_tool in frameworks/serializer.py.
+                    if ("agent_tool".equals(tool.getToolType()) && tool.getAgentRef() != null) {
+                        Map<String, Object> t = new LinkedHashMap<>();
+                        t.put("_type", "AgentTool");
+                        t.put("name", tool.getName());
+                        t.put("description", tool.getDescription() != null ? tool.getDescription() : "");
+                        t.put("agent", serializeAgent(tool.getAgentRef()));
+                        toolsList.add(t);
+                        continue;
+                    }
+                    // Regular worker tool: _worker_ref shape.
+                    Map<String, Object> t = new LinkedHashMap<>();
+                    t.put("_worker_ref", tool.getName());
+                    t.put("description", tool.getDescription());
+                    t.put("parameters", tool.getInputSchema());
+                    toolsList.add(t);
+                }
+                map.put("tools", toolsList);
+            }
+            // Guardrails — emit so framework normalizers can preserve
+            // Agentspan-side safety hooks. Without this, attaching
+            // .guardrails(...) to a bridged ADK / OpenAI agent silently
+            // drops them at the wire layer.
+            if (agent.getGuardrails() != null && !agent.getGuardrails().isEmpty()) {
+                List<Map<String, Object>> guardrailsList = new ArrayList<>();
+                for (GuardrailDef g : agent.getGuardrails()) {
+                    guardrailsList.add(serializeGuardrail(g, agent.getName()));
+                }
+                map.put("guardrails", guardrailsList);
+            }
+            // Framework-specific extras (handoffs, sub_agents, output_type, etc.)
+            Map<String, Object> cfg = agent.getFrameworkConfig();
+            if (cfg != null) map.putAll(cfg);
+            return map;
+        }
+
         Map<String, Object> agentMap = new LinkedHashMap<>();
 
         agentMap.put("name", agent.getName());
@@ -54,8 +120,16 @@ public class AgentConfigSerializer {
             agentMap.put("model", agent.getModel());
         }
 
-        // Strategy — only if sub-agents present
-        if (agent.getAgents() != null && !agent.getAgents().isEmpty()) {
+        // Strategy — emit when any of the multi-agent inputs is set: the legacy
+        // ``agents=[…]`` positional list OR PLAN_EXECUTE's named slots
+        // (``planner=`` / ``fallback=``). Without the slot check, a
+        // PLAN_EXECUTE coordinator built with ``.planner(...).fallback(...)``
+        // sent an empty agents list, no strategy field, and the server
+        // dispatched it as ``handoff`` (the default) — then rejected the
+        // named slots with HTTP 400.
+        boolean hasAgents = agent.getAgents() != null && !agent.getAgents().isEmpty();
+        boolean hasNamedSlots = agent.getPlanner() != null || agent.getFallback() != null;
+        if (hasAgents || hasNamedSlots) {
             agentMap.put("strategy", agent.getStrategy().toJsonValue());
         }
 
@@ -157,9 +231,24 @@ public class AgentConfigSerializer {
             agentMap.put("allowedTransitions", agent.getAllowedTransitions());
         }
 
-        // Planner mode
-        if (agent.isPlanner()) {
-            agentMap.put("planner", true);
+        // Plan-first preamble (Google ADK style). Renamed from "planner"
+        // because the server's AgentConfig now uses that JSON key for the
+        // PLAN_EXECUTE planner sub-agent slot. Emitting "planner": true
+        // (boolean) into a slot the server expects to be an AgentConfig
+        // object would either fail Jackson deserialisation or silently null.
+        if (agent.isEnablePlanning()) {
+            agentMap.put("enablePlanning", true);
+        }
+
+        // PLAN_EXECUTE named slots: planner (required) + fallback (optional).
+        // Both serialize as nested AgentConfig dicts. The server reads them
+        // in MultiAgentCompiler.compilePlanExecute; the parent's ``tools``
+        // list (serialized above) becomes the planner's allowed-tool set.
+        if (agent.getPlanner() != null) {
+            agentMap.put("planner", serializeAgent(agent.getPlanner()));
+        }
+        if (agent.getFallback() != null) {
+            agentMap.put("fallback", serializeAgent(agent.getFallback()));
         }
 
         // Synthesize — only emit when explicitly disabled (true is the server default)
@@ -259,6 +348,18 @@ public class AgentConfigSerializer {
             agentMap.put("requiredTools", agent.getRequiredTools());
         }
 
+        // Prefill tools (tool calls to execute before the first LLM turn)
+        if (agent.getPrefillTools() != null && !agent.getPrefillTools().isEmpty()) {
+            List<Map<String, Object>> prefillList = new ArrayList<>();
+            for (var pt : agent.getPrefillTools()) {
+                Map<String, Object> ptMap = new LinkedHashMap<>();
+                ptMap.put("toolName", pt.getToolName());
+                ptMap.put("arguments", pt.getArguments());
+                prefillList.add(ptMap);
+            }
+            agentMap.put("prefillTools", prefillList);
+        }
+
         // Agent-level credentials
         if (agent.getCredentials() != null && !agent.getCredentials().isEmpty()) {
             agentMap.put("credentials", agent.getCredentials());
@@ -274,6 +375,22 @@ public class AgentConfigSerializer {
             Map<String, Object> stopWhen = new LinkedHashMap<>();
             stopWhen.put("taskName", agent.getStopWhenTaskName());
             agentMap.put("stopWhen", stopWhen);
+        }
+
+        // Fallback max turns (PLAN_EXECUTE strategy)
+        if (agent.getFallbackMaxTurns() != null) {
+            agentMap.put("fallbackMaxTurns", agent.getFallbackMaxTurns());
+        }
+
+        // Planner context (PLAN_EXECUTE strategy) — text snippets + URLs
+        // injected into the planner's prompt. Each Context entry serialises
+        // via toJson() — defaults are omitted so the payload stays tight.
+        if (agent.getPlannerContext() != null && !agent.getPlannerContext().isEmpty()) {
+            java.util.List<Map<String, Object>> ctx = new java.util.ArrayList<>();
+            for (ai.agentspan.plans.Context entry : agent.getPlannerContext()) {
+                ctx.add(entry.toJson());
+            }
+            agentMap.put("plannerContext", ctx);
         }
 
         // Stateful mode
@@ -366,16 +483,12 @@ public class AgentConfigSerializer {
         return agentMap;
     }
 
-    private Map<String, Object> serializeTool(ToolDef tool) {
-        return serializeTool(tool, false);
-    }
-
     private Map<String, Object> serializeTool(ToolDef tool, boolean agentStateful) {
         Map<String, Object> toolMap = new LinkedHashMap<>();
         toolMap.put("name", tool.getName());
         toolMap.put("description", tool.getDescription());
         toolMap.put("inputSchema", tool.getInputSchema());
-        if (agentStateful) {
+        if (agentStateful || tool.isStateful()) {
             toolMap.put("stateful", true);
         }
         if ("worker".equals(tool.getToolType())) {
@@ -390,6 +503,18 @@ public class AgentConfigSerializer {
         }
         if (tool.getTimeoutSeconds() > 0) {
             toolMap.put("timeoutSeconds", tool.getTimeoutSeconds());
+        }
+        if (tool.getMaxCalls() > 0) {
+            toolMap.put("maxCalls", tool.getMaxCalls());
+        }
+        if (tool.getRetryCount() != 2) {
+            toolMap.put("retryCount", tool.getRetryCount());
+        }
+        if (tool.getRetryDelaySeconds() != 2) {
+            toolMap.put("retryDelaySeconds", tool.getRetryDelaySeconds());
+        }
+        if (tool.getRetryPolicy() != null && !"linear_backoff".equals(tool.getRetryPolicy())) {
+            toolMap.put("retryPolicy", tool.getRetryPolicy());
         }
 
         // Credentials must be nested inside config so the server includes them

@@ -34,6 +34,20 @@ from agentspan.agents.agent import (
     scatter_gather,
 )
 
+# Typed plan builders + convenience constructor (Strategy.PLAN_EXECUTE)
+from agentspan.agents.plans import (
+    Action,
+    Context,
+    Generate,
+    Op,
+    Plan,
+    Ref,
+    Step,
+    Validation,
+    coerce_plan,
+    plan_execute,
+)
+
 # Claude Code configuration
 from agentspan.agents.claude_code import ClaudeCode
 
@@ -166,7 +180,7 @@ from agentspan.agents.runtime.discovery import discover_agents
 
 # MCP discovery utilities
 from agentspan.agents.runtime.mcp_discovery import clear_discovery_cache
-from agentspan.agents.runtime.runtime import AgentRuntime
+from agentspan.agents.runtime.runtime import VALID_RETRY_POLICIES, AgentRuntime
 from agentspan.agents.semantic_memory import MemoryEntry, MemoryStore, SemanticMemory
 
 # Termination conditions
@@ -184,6 +198,7 @@ from agentspan.agents.openai_compat import RunResult, Runner
 
 # Tool decorator and constructors
 from agentspan.agents.tool import (
+    PrefillToolCall,
     ToolContext,
     ToolDef,
     agent_tool,
@@ -221,6 +236,7 @@ __all__ = [
     "agent",
     "scatter_gather",
     "AgentRuntime",
+    "VALID_RETRY_POLICIES",
     "AgentConfig",
     # Extended agent types
     "UserProxyAgent",

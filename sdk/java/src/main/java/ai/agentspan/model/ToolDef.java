@@ -25,12 +25,21 @@ public class ToolDef {
     private final int timeoutSeconds;
     private final int retryCount;
     private final int retryDelaySeconds;
+    private final String retryPolicy;
     private final String toolType;
     private final Map<String, Object> config;
     private final List<String> credentials;
     private final List<GuardrailDef> guardrails;
+    private final int maxCalls;
     /** For {@code agent_tool} type: the child Agent whose workers must be registered. Not serialized directly. */
     private final Agent agentRef;
+    /**
+     * Per-tool stateful flag. When true, the tool requires domain-routed
+     * polling even on a non-stateful agent (parity with Python's
+     * {@code @tool(stateful=True)}). Causes AgentRuntime to generate a
+     * runId and the server to assign a worker domain to this task.
+     */
+    private final boolean stateful;
 
     private ToolDef(Builder builder) {
         this.name = builder.name;
@@ -42,11 +51,14 @@ public class ToolDef {
         this.timeoutSeconds = builder.timeoutSeconds;
         this.retryCount = builder.retryCount;
         this.retryDelaySeconds = builder.retryDelaySeconds;
+        this.retryPolicy = builder.retryPolicy;
         this.toolType = builder.toolType;
         this.config = builder.config;
         this.credentials = builder.credentials != null ? builder.credentials : new ArrayList<>();
         this.guardrails = builder.guardrails != null ? builder.guardrails : new ArrayList<>();
+        this.maxCalls = builder.maxCalls;
         this.agentRef = builder.agentRef;
+        this.stateful = builder.stateful;
     }
 
     public String getName() { return name; }
@@ -58,11 +70,14 @@ public class ToolDef {
     public int getTimeoutSeconds() { return timeoutSeconds; }
     public int getRetryCount() { return retryCount; }
     public int getRetryDelaySeconds() { return retryDelaySeconds; }
+    public String getRetryPolicy() { return retryPolicy; }
     public String getToolType() { return toolType; }
     public Map<String, Object> getConfig() { return config; }
     public List<String> getCredentials() { return credentials; }
     public List<GuardrailDef> getGuardrails() { return guardrails; }
+    public int getMaxCalls() { return maxCalls; }
     public Agent getAgentRef() { return agentRef; }
+    public boolean isStateful() { return stateful; }
 
     public static Builder builder() {
         return new Builder();
@@ -78,11 +93,14 @@ public class ToolDef {
         private int timeoutSeconds = 0;
         private int retryCount = 2;
         private int retryDelaySeconds = 2;
+        private String retryPolicy = "linear_backoff";
         private String toolType = "worker";
         private Map<String, Object> config;
         private List<String> credentials;
         private List<GuardrailDef> guardrails;
+        private int maxCalls = 0;
         private Agent agentRef;
+        private boolean stateful = false;
 
         public Builder name(String name) { this.name = name; return this; }
         public Builder description(String description) { this.description = description; return this; }
@@ -93,11 +111,18 @@ public class ToolDef {
         public Builder timeoutSeconds(int timeoutSeconds) { this.timeoutSeconds = timeoutSeconds; return this; }
         public Builder retryCount(int retryCount) { this.retryCount = retryCount; return this; }
         public Builder retryDelaySeconds(int retryDelaySeconds) { this.retryDelaySeconds = retryDelaySeconds; return this; }
+        public Builder retryPolicy(String retryPolicy) { this.retryPolicy = retryPolicy; return this; }
         public Builder toolType(String toolType) { this.toolType = toolType; return this; }
         public Builder config(Map<String, Object> config) { this.config = config; return this; }
         public Builder credentials(List<String> credentials) { this.credentials = credentials; return this; }
         public Builder guardrails(List<GuardrailDef> guardrails) { this.guardrails = guardrails; return this; }
+        public Builder maxCalls(int maxCalls) { this.maxCalls = maxCalls; return this; }
         public Builder agentRef(Agent agentRef) { this.agentRef = agentRef; return this; }
+        /**
+         * Mark this tool as stateful so the runtime routes its tasks to a
+         * per-execution worker domain. Mirrors Python {@code @tool(stateful=True)}.
+         */
+        public Builder stateful(boolean stateful) { this.stateful = stateful; return this; }
 
         public ToolDef build() {
             if (name == null || name.isEmpty()) {

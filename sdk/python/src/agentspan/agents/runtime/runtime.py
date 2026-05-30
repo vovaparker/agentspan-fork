@@ -20,7 +20,7 @@ import re
 import threading
 import time
 import uuid
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Union
 
 from agentspan.agents.agent import Agent
 from agentspan.agents.exceptions import _raise_api_error
@@ -41,7 +41,37 @@ from agentspan.agents.runtime.http_client import AgentHttpClient, SSEUnavailable
 logger = logging.getLogger("agentspan.agents.runtime")
 
 
-def _default_task_def(name: str, *, response_timeout_seconds: int = 10, retry_count: int = 2, retry_delay_seconds: int = 2) -> Any:
+_RETRY_POLICY_MAP = {
+    "fixed": "FIXED",
+    "linear_backoff": "LINEAR_BACKOFF",
+    "exponential_backoff": "EXPONENTIAL_BACKOFF",
+}
+
+VALID_RETRY_POLICIES = frozenset(_RETRY_POLICY_MAP.keys())
+
+
+def _resolve_retry_logic(policy: str) -> str:
+    """Convert a user-friendly retry policy name to the Conductor retry logic constant."""
+    key = policy.lower().strip()
+    if key in _RETRY_POLICY_MAP:
+        return _RETRY_POLICY_MAP[key]
+    upper = key.upper()
+    if upper in _RETRY_POLICY_MAP.values():
+        return upper
+    raise ValueError(
+        f"Invalid retry_policy '{policy}'. "
+        f"Valid options: {', '.join(sorted(VALID_RETRY_POLICIES))}"
+    )
+
+
+def _default_task_def(
+    name: str,
+    *,
+    response_timeout_seconds: int = 10,
+    retry_count: int = 2,
+    retry_delay_seconds: int = 2,
+    retry_policy: str = "linear_backoff",
+) -> Any:
     """Create a TaskDef with standard retry policy for agent worker tasks.
 
     Timeout is 0 (no timeout) — the agent configuration controls execution
@@ -56,7 +86,7 @@ def _default_task_def(name: str, *, response_timeout_seconds: int = 10, retry_co
 
     td = TaskDef(name=name)
     td.retry_count = retry_count
-    td.retry_logic = "LINEAR_BACKOFF"
+    td.retry_logic = _resolve_retry_logic(retry_policy)
     td.retry_delay_seconds = retry_delay_seconds
     td.timeout_seconds = 0
     td.response_timeout_seconds = response_timeout_seconds
@@ -417,6 +447,20 @@ class AgentRuntime:
         with _workflow_credentials_lock:
             _workflow_credentials.pop(execution_id, None)
 
+    def _resolve_worker_domain(self, execution_id: str, run_id: Optional[str]) -> Optional[str]:
+        """Return the domain workers should poll for this execution.
+
+        A fresh stateful start uses ``run_id`` as the task domain.  If the
+        server returns an existing execution for an idempotency key, that
+        execution already has its original ``taskToDomain`` mapping, so the
+        freshly generated ``run_id`` would be wrong.  Prefer the server's
+        recorded domain and fall back to the generated one for brand-new runs
+        or older servers.
+        """
+        if not run_id:
+            return None
+        return self._extract_domain(execution_id) or run_id
+
     def _pre_deploy_nested_skills(self, agent: Agent) -> list:
         """Pre-deploy any skill agents nested inside agent_tool wrappers.
 
@@ -435,11 +479,14 @@ class AgentRuntime:
             if td.tool_type == "agent_tool" and td.config and "agent" in td.config:
                 nested = td.config["agent"]
                 if getattr(nested, "_framework", None) == "skill":
+                    from agentspan.agents.skill import create_skill_workers
+
                     workflow_name = self._deploy_via_server(nested, framework="skill")
                     logger.info("Pre-deployed skill '%s' as workflow '%s'", nested.name, workflow_name)
                     # Save for later registration with domain (run_id not known yet)
                     skills_to_register.append(nested)
                     td.config["workflowName"] = workflow_name
+                    td.config["workerNames"] = [sw.name for sw in create_skill_workers(nested)]
                     td.config.pop("agent", None)
 
         for sub in getattr(agent, "agents", []):
@@ -459,6 +506,7 @@ class AgentRuntime:
         credentials: Optional[List[str]] = None,
         context: Optional[Dict[str, Any]] = None,
         run_id: Optional[str] = None,
+        static_plan: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Start an agent via the server's /api/agent/start endpoint.
 
@@ -493,6 +541,11 @@ class AgentRuntime:
             payload["credentials"] = credentials
         if run_id:
             payload["runId"] = run_id
+        if static_plan is not None:
+            # Server's extract_json INLINE reads `workflow.input.static_plan`
+            # as the Case-0 plan source. Whatever the planner LLM emits is
+            # discarded when this is set.
+            payload["static_plan"] = static_plan
 
         url = self._agent_api_url("/start")
         resp = req_lib.post(url, json=payload, headers=self._agent_api_headers(), timeout=30)
@@ -716,10 +769,12 @@ class AgentRuntime:
                     logger.debug("Starting workers for agent '%s'", agent.name)
                     self._worker_manager.start()
                     self._workers_started = True
-                elif new_workers:
-                    # Inject new workers into the running TaskHandler without
-                    # stopping existing ones.  This avoids the fork() deadlock
-                    # window caused by a full stop/restart cycle.
+                else:
+                    # New stateful runs can register the same task names under
+                    # a different domain. WorkerManager is domain-aware and
+                    # starts only missing (task_name, domain) pairs, so call it
+                    # even when the task-name set has not changed — this avoids
+                    # the fork() deadlock window of a full stop/restart cycle.
                     self._worker_manager.start()
 
         return wf
@@ -832,10 +887,12 @@ class AgentRuntime:
                     logger.debug("Starting workers for agent '%s'", agent.name)
                     self._worker_manager.start()
                     self._workers_started = True
-                elif new_workers:
-                    # Inject new workers into the running TaskHandler without
-                    # stopping existing ones.  This avoids the fork() deadlock
-                    # window caused by a full stop/restart cycle.
+                else:
+                    # New stateful runs can register the same task names under
+                    # a different domain. WorkerManager is domain-aware and
+                    # starts only missing (task_name, domain) pairs, so call it
+                    # even when the task-name set has not changed — this avoids
+                    # the fork() deadlock window of a full stop/restart cycle.
                     self._worker_manager.start()
 
     def _collect_worker_names(
@@ -942,8 +999,9 @@ class AgentRuntime:
         ):
             names.add(f"{agent.name}_router_fn")
 
-        # Handoff check (swarm with handoff conditions)
-        if agent.handoffs:
+        # Handoff check — needed for any SWARM parent (server always generates
+        # the task) or any agent with explicit handoff conditions.
+        if agent.handoffs or (agent.strategy == "swarm" and agent.agents):
             names.add(f"{agent.name}_handoff_check")
 
         # Swarm transfer workers — prefixed with SOURCE agent name
@@ -1127,8 +1185,9 @@ class AgentRuntime:
             if _server_needs(task_name):
                 self._register_router_worker(agent, domain=domain)
 
-        # 7. Handoff check (swarm with handoff conditions)
-        if agent.handoffs:
+        # 7. Handoff check — needed for any SWARM parent (server always
+        #    generates the task) or any agent with explicit handoff conditions.
+        if agent.handoffs or (agent.strategy == "swarm" and agent.agents):
             task_name = f"{agent.name}_handoff_check"
             if _server_needs(task_name):
                 self._register_handoff_worker(agent, domain=domain)
@@ -2499,6 +2558,16 @@ class AgentRuntime:
                 **kwargs,
             )
 
+        # Static plan for Strategy.PLAN_EXECUTE harness — the SDK forwards
+        # the user-supplied Plan/dict into `workflow.input.static_plan`,
+        # which the server's extract_json picks up as the Case-0 source
+        # (wins over the planner LLM's output). See plan-execute.md.
+        plan_kwarg = kwargs.pop("plan", None)
+        static_plan: Optional[Dict[str, Any]] = None
+        if plan_kwarg is not None:
+            from agentspan.agents.plans import coerce_plan
+            static_plan = coerce_plan(plan_kwarg)
+
         if kwargs:
             logger.warning("Unrecognized keyword arguments: %s", ", ".join(kwargs.keys()))
 
@@ -2543,10 +2612,13 @@ class AgentRuntime:
             credentials=credentials,
             context=context,
             run_id=run_id,
+            static_plan=static_plan,
         )
 
-        self._prepare_workers(agent, required_workers=required_workers, domain=run_id)
-        self._register_and_start_skill_workers(pre_deployed_skills, domain=run_id)
+        worker_domain = self._resolve_worker_domain(execution_id, run_id)
+
+        self._prepare_workers(agent, required_workers=required_workers, domain=worker_domain)
+        self._register_and_start_skill_workers(pre_deployed_skills, domain=worker_domain)
 
         self._register_workflow_credentials(execution_id, credentials)
 
@@ -3123,6 +3195,8 @@ class AgentRuntime:
         if not workers:
             return
 
+        from conductor.client.worker.worker_task import worker_task
+
         from agentspan.agents.frameworks.langgraph import (
             make_llm_finish_worker,
             make_llm_prep_worker,
@@ -3131,7 +3205,6 @@ class AgentRuntime:
             make_subgraph_finish_worker,
             make_subgraph_prep_worker,
         )
-        from conductor.client.worker.worker_task import worker_task
 
         graph_info = raw_config.get("_graph", {})
         router_refs = {
@@ -3211,12 +3284,11 @@ class AgentRuntime:
                 credential_names=credentials,
             )
         elif framework == "claude_agent_sdk":
+            from agentspan.agents.agent import Agent as AgentClass
             from agentspan.agents.frameworks.claude_agent_sdk import (
                 agent_to_claude_code_options,
                 make_claude_agent_sdk_worker,
             )
-
-            from agentspan.agents.agent import Agent as AgentClass
 
             # CRITICAL: convert Agent → ClaudeCodeOptions before passing to worker
             if isinstance(agent_obj, AgentClass):
@@ -3675,8 +3747,10 @@ class AgentRuntime:
             run_id=run_id,
         )
 
-        self._prepare_workers(agent, required_workers=required_workers, domain=run_id)
-        self._register_and_start_skill_workers(pre_deployed_skills, domain=run_id)
+        worker_domain = self._resolve_worker_domain(execution_id, run_id)
+
+        self._prepare_workers(agent, required_workers=required_workers, domain=worker_domain)
+        self._register_and_start_skill_workers(pre_deployed_skills, domain=worker_domain)
 
         return AgentHandle(
             execution_id=execution_id, runtime=self, correlation_id=correlation_id, run_id=run_id
@@ -3896,7 +3970,6 @@ class AgentRuntime:
                         has_waiting_human = True
                         if task_id and task_id not in seen_human_task_ids:
                             seen_human_task_ids.add(task_id)
-                            input_data = getattr(task, "input_data", {}) or {}
                             task_ref = getattr(task, "reference_task_name", "")
                             yield AgentEvent(
                                 type=EventType.WAITING,
@@ -4070,8 +4143,10 @@ class AgentRuntime:
             run_id=run_id,
         )
 
-        self._prepare_workers(agent, required_workers=required_workers, domain=run_id)
-        self._register_and_start_skill_workers(pre_deployed_skills, domain=run_id)
+        worker_domain = self._resolve_worker_domain(execution_id, run_id)
+
+        self._prepare_workers(agent, required_workers=required_workers, domain=worker_domain)
+        self._register_and_start_skill_workers(pre_deployed_skills, domain=worker_domain)
         self._register_workflow_credentials(execution_id, credentials)
 
         effective_timeout = timeout or (
@@ -4206,8 +4281,10 @@ class AgentRuntime:
             run_id=run_id,
         )
 
-        self._prepare_workers(agent, required_workers=required_workers, domain=run_id)
-        self._register_and_start_skill_workers(pre_deployed_skills, domain=run_id)
+        worker_domain = self._resolve_worker_domain(execution_id, run_id)
+
+        self._prepare_workers(agent, required_workers=required_workers, domain=worker_domain)
+        self._register_and_start_skill_workers(pre_deployed_skills, domain=worker_domain)
 
         return AgentHandle(
             execution_id=execution_id, runtime=self, correlation_id=correlation_id, run_id=run_id

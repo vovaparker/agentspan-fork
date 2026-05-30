@@ -79,7 +79,7 @@ describe("serializeAgent() — simple agent", () => {
       temperature: 0.7,
       timeoutSeconds: 300,
       external: true,
-      planner: true,
+      enablePlanning: true,
       includeContents: "none",
       requiredTools: ["search"],
     });
@@ -90,7 +90,7 @@ describe("serializeAgent() — simple agent", () => {
     expect(config.temperature).toBe(0.7);
     expect(config.timeoutSeconds).toBe(300);
     expect(config.external).toBe(true);
-    expect(config.planner).toBe(true);
+    expect(config.enablePlanning).toBe(true);
     expect(config.includeContents).toBe("none");
     expect(config.requiredTools).toEqual(["search"]);
   });
@@ -247,6 +247,22 @@ describe("serializeAgent() — tools", () => {
     });
     expect(toolConfig.approvalRequired).toBe(true);
     expect(toolConfig.timeoutSeconds).toBe(120);
+  });
+
+  it("serializes retry configuration on worker tools", () => {
+    const t = tool(async (args: { x: string }) => args, {
+      description: "Retry tool",
+      inputSchema: { type: "object", properties: { x: { type: "string" } } },
+      retryCount: 5,
+      retryDelaySeconds: 10,
+      retryPolicy: "exponential_backoff",
+    });
+    const a = new Agent({ name: "test", tools: [t] });
+    const config = serializer.serializeAgent(a);
+    const toolConfig = (config.tools as any[])[0];
+    expect(toolConfig.retryCount).toBe(5);
+    expect(toolConfig.retryDelaySeconds).toBe(10);
+    expect(toolConfig.retryPolicy).toBe("exponential_backoff");
   });
 });
 

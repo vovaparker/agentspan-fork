@@ -21,7 +21,7 @@ internal static class AgentConfigSerializer
         // {framework, rawConfig, prompt, sessionId}. The server routes these to
         // OpenAINormalizer / GoogleADKNormalizer based on `framework`. Mirrors
         // Java's HttpApi.startFrameworkAgent (POST /api/agent/start with framework).
-        if (agent.Framework is "openai" or "google_adk")
+        if (agent.Framework is "openai" or "google_adk" or "skill")
         {
             var env = new JsonObject
             {
@@ -48,6 +48,22 @@ internal static class AgentConfigSerializer
         // GoogleADKNormalizer) consume a different wire shape than the default.
         // Tools are emitted as {_worker_ref, description, parameters}; raw
         // framework config (handoffs, sub_agents, output_type) is folded in.
+        if (agent.Framework == "skill")
+        {
+            var skill = new JsonObject
+            {
+                ["name"] = agent.Name,
+                ["model"] = agent.Model,
+                ["_framework"] = "skill",
+            };
+            if (agent.FrameworkConfig is not null)
+            {
+                foreach (var (k, v) in agent.FrameworkConfig)
+                    skill[k] = JsonNode.Parse(JsonSerializer.Serialize(v, AgentspanJson.Options));
+            }
+            return skill;
+        }
+
         if (agent.Framework is "openai" or "google_adk")
         {
             return SerializeFrameworkAgent(agent);
@@ -65,7 +81,35 @@ internal static class AgentConfigSerializer
         if (agent.IncludeContents  is not null) cfg["includeContents"]  = agent.IncludeContents;
         if (agent.Introduction     is not null) cfg["introduction"]     = agent.Introduction;
         if (agent.External)                     cfg["external"]         = true;
-        if (agent.Planner)                      cfg["planner"]          = true;
+        // Legacy "plan-first preamble" flag — server expects `enablePlanning`
+        // (Boolean) since the `planner` JSON key was repurposed for the
+        // PAC/PAE sub-agent slot below.
+        if (agent.EnablePlanning)               cfg["enablePlanning"]   = true;
+
+        // PLAN_EXECUTE named slots: planner (required when Strategy=PlanExecute)
+        // + fallback (optional). Both serialize as nested AgentConfig objects.
+        if (agent.Planner  is not null)         cfg["planner"]  = SerializeAgent(agent.Planner);
+        if (agent.Fallback is not null)         cfg["fallback"] = SerializeAgent(agent.Fallback);
+        if (agent.FallbackMaxTurns.HasValue)    cfg["fallbackMaxTurns"] = agent.FallbackMaxTurns.Value;
+
+        // Planner context (PLAN_EXECUTE strategy) — text snippets + URLs
+        // injected into the planner's prompt. Reject if set on a non-
+        // PLAN_EXECUTE strategy to match the Python/TS/Java SDK guard
+        // shape (caught at build time elsewhere; serialization is the
+        // last line of defence).
+        if (agent.PlannerContext is { Count: > 0 })
+        {
+            if (agent.Strategy != Strategy.PlanExecute)
+            {
+                throw new InvalidOperationException(
+                    "PlannerContext is only valid with Strategy.PlanExecute. " +
+                    $"Got Strategy={agent.Strategy}. The context block is appended " +
+                    "to the planner's user prompt at runtime, which only exists in PLAN_EXECUTE.");
+            }
+            var arr = new JsonArray();
+            foreach (var entry in agent.PlannerContext) arr.Add(entry.ToJson());
+            cfg["plannerContext"] = arr;
+        }
 
         if (agent.LocalCodeExecution || agent.CodeExecution is not null
             || agent.AllowedLanguages is not null || agent.AllowedCommands is not null)
@@ -121,11 +165,66 @@ internal static class AgentConfigSerializer
             cfg["promptTemplate"] = pt;
         }
 
+        // Inject execute_code worker tool when local code execution is on, so
+        // the LLM sees it as a callable function. Mirrors Python's
+        // Agent._attach_code_execution_tool and Java's serializer block.
+        // The tool name is {agent_name}_execute_code to avoid multi-agent
+        // collisions and to match what AgentRuntime.RegisterLocalCodeExecutionWorker
+        // registers locally.
+        var injectedTools = new JsonArray();
         if (agent.Tools.Count > 0)
         {
-            var tools = new JsonArray();
-            foreach (var t in agent.Tools) tools.Add(SerializeTool(t, agent.Stateful));
-            cfg["tools"] = tools;
+            foreach (var t in agent.Tools) injectedTools.Add(SerializeTool(t, agent.Stateful));
+        }
+        if (agent.LocalCodeExecution || agent.CodeExecution is not null)
+        {
+            var langs = agent.CodeExecution?.AllowedLanguages ?? agent.AllowedLanguages
+                        ?? new List<string> { "python" };
+            if (langs.Count == 0) langs = ["python"];
+            var langArr = new JsonArray();
+            foreach (var l in langs) langArr.Add(l);
+
+            var langDesc = string.Join(", ", langs);
+            var properties = new JsonObject
+            {
+                ["language"] = new JsonObject
+                {
+                    ["type"]        = "string",
+                    ["description"] = "The programming language to use. One of: " + langDesc,
+                    ["enum"]        = new JsonArray(langs.Select(l => (JsonNode?)l).ToArray()),
+                },
+                ["code"] = new JsonObject
+                {
+                    ["type"]        = "string",
+                    ["description"] = "The code to execute.",
+                },
+            };
+
+            var execTool = new JsonObject
+            {
+                ["name"] = $"{agent.Name}_execute_code",
+                ["description"] =
+                    "Execute code in the specified language. Supported languages: " + langDesc +
+                    ". Each execution runs in an isolated environment — no state, variables, " +
+                    "or imports persist between calls.",
+                ["inputSchema"] = new JsonObject
+                {
+                    ["type"]       = "object",
+                    ["properties"] = properties,
+                    ["required"]   = new JsonArray { "language", "code" },
+                },
+                ["outputSchema"] = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["additionalProperties"] = new JsonObject(),
+                },
+                ["toolType"] = "worker",
+            };
+            injectedTools.Add(execTool);
+        }
+        if (injectedTools.Count > 0)
+        {
+            cfg["tools"] = injectedTools;
         }
 
         if (agent.Guardrails.Count > 0)
@@ -247,6 +346,7 @@ internal static class AgentConfigSerializer
     private static string StrategyToWire(Strategy strategy) => strategy switch
     {
         Strategy.RoundRobin => "round_robin",
+        Strategy.PlanExecute => "plan_execute",
         _ => strategy.ToString().ToLowerInvariant(),
     };
 
@@ -263,12 +363,19 @@ internal static class AgentConfigSerializer
             ["toolType"]    = toolType,
         };
 
-        // Stateful routing: propagate agent.Stateful to worker tools
-        if (agentStateful && toolType is "worker" or "external")
+        // Stateful routing: emit stateful=true if the agent is stateful OR the
+        // tool itself is marked stateful (mirrors Python @tool(stateful=True)).
+        if ((agentStateful || tool.Stateful) && toolType is "worker" or "external")
             t["stateful"] = true;
 
         if (tool.ApprovalRequired)        t["approvalRequired"] = true;
         if (tool.TimeoutSeconds.HasValue)  t["timeoutSeconds"]   = tool.TimeoutSeconds.Value;
+        if (tool.RetryCount.HasValue && tool.RetryCount.Value != 2)
+            t["retryCount"] = tool.RetryCount.Value;
+        if (tool.RetryDelaySeconds.HasValue && tool.RetryDelaySeconds.Value != 2)
+            t["retryDelaySeconds"] = tool.RetryDelaySeconds.Value;
+        if (!string.IsNullOrEmpty(tool.RetryPolicy) && tool.RetryPolicy != "linear_backoff")
+            t["retryPolicy"] = tool.RetryPolicy;
 
         // For worker/external tools, credentials go at top level.
         // For all other tool types (http, mcp, media, rag), they go inside config.
@@ -295,6 +402,13 @@ internal static class AgentConfigSerializer
             {
                 ["agentConfig"] = SerializeAgent(tool.WrappedAgent),
             };
+            if (tool.WrappedAgent.Framework == "skill")
+            {
+                config["workerNames"] = new JsonArray(
+                    Skill.CreateSkillWorkers(tool.WrappedAgent)
+                        .Select(w => (JsonNode?)w.Name)
+                        .ToArray());
+            }
             if (tool.AgentToolRetryCount.HasValue)
                 config["retryCount"] = tool.AgentToolRetryCount.Value;
             if (tool.AgentToolRetryDelaySeconds.HasValue)

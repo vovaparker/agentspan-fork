@@ -5,6 +5,7 @@ package ai.agentspan.internal;
 
 import ai.agentspan.AgentConfig;
 import ai.agentspan.exceptions.AgentAPIException;
+import ai.agentspan.exceptions.AgentNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -14,14 +15,14 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
- * Direct HTTP client for Agentspan server API calls.
+ * HTTP client for the Agent Runtime API.
  *
- * <p>Uses {@code java.net.http.HttpClient} (Java 11+) for HTTP communication.
- * All methods are synchronous and throw {@link AgentAPIException} on non-2xx responses.
+ * <p>Mirrors the Python SDK's {@code AgentHttpClient}: one method per
+ * server endpoint, payload-shaped by the caller. Worker-protocol calls
+ * (poll / complete / fail / register) live in {@link WorkerHttp}.
  */
 public class HttpApi {
     private static final Logger logger = LoggerFactory.getLogger(HttpApi.class);
@@ -36,192 +37,40 @@ public class HttpApi {
             .build();
     }
 
-    /**
-     * Start an agent execution.
-     *
-     * @param agentConfig serialized agent configuration
-     * @param prompt      user prompt
-     * @param sessionId   optional session ID
-     * @return server response containing workflowId
-     */
-    public Map<String, Object> startAgent(Map<String, Object> agentConfig, String prompt, String sessionId) {
-        Map<String, Object> body = new HashMap<>();
-        body.put("agentConfig", agentConfig);
-        body.put("prompt", prompt);
-        if (sessionId != null && !sessionId.isEmpty()) {
-            body.put("sessionId", sessionId);
-        }
-
-        return post("/api/agent/start", body);
+    /** {@code POST /api/agent/start} — start an agent execution. */
+    public Map<String, Object> startAgent(Map<String, Object> payload) {
+        return post("/api/agent/start", payload);
     }
 
-    /**
-     * Compile an agent configuration into a workflow definition.
-     *
-     * <p>Calls {@code POST /api/agent/compile} with {@code {"agentConfig": agentConfig}}
-     * and returns the server response containing {@code workflowDef} and
-     * {@code requiredWorkers}.
-     *
-     * @param agentConfig serialized agent configuration
-     * @return server response containing workflowDef and requiredWorkers
-     */
-    public Map<String, Object> compileAgent(Map<String, Object> agentConfig) {
-        Map<String, Object> body = new HashMap<>();
-        body.put("agentConfig", agentConfig);
-        return post("/api/agent/compile", body);
+    /** {@code POST /api/agent/compile} — compile agent config to workflow def. */
+    public Map<String, Object> compileAgent(Map<String, Object> payload) {
+        return post("/api/agent/compile", payload);
     }
 
-    /**
-     * Get the current status of an agent workflow.
-     *
-     * @param workflowId the workflow ID
-     * @return status response map
-     */
-    public Map<String, Object> getAgentStatus(String workflowId) {
-        return get("/api/agent/" + workflowId + "/status");
-    }
-
-    /**
-     * Respond to a waiting agent (approve/reject a tool or send a message).
-     *
-     * @param workflowId the workflow ID
-     * @param approved   whether to approve
-     * @param reason     optional rejection reason
-     */
-    public void respondToAgent(String workflowId, boolean approved, String reason) {
-        Map<String, Object> body = new HashMap<>();
-        body.put("approved", approved);
-        if (reason != null && !reason.isEmpty()) {
-            body.put("reason", reason);
-        }
-        post("/api/agent/" + workflowId + "/respond", body);
-    }
-
-    /**
-     * Send an arbitrary JSON response to a waiting agent.
-     *
-     * <p>Used for structured responses such as manual agent selection:
-     * {@code {"selected": "writer"}}.
-     *
-     * @param workflowId the workflow ID
-     * @param data       the response payload
-     */
-    public void respondWithData(String workflowId, Map<String, Object> data) {
-        post("/api/agent/" + workflowId + "/respond", data);
-    }
-
-    /**
-     * Poll for a pending task of the given type.
-     *
-     * @param taskType the task type to poll
-     * @return task data or null if no pending task
-     */
-    @SuppressWarnings("unchecked")
-    public Map<String, Object> pollTask(String taskType) {
-        try {
-            String url = config.getServerUrl() + "/api/tasks/poll/" + taskType;
-            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .timeout(Duration.ofSeconds(10))
-                .GET();
-
-            addAuthHeaders(requestBuilder);
-
-            HttpRequest request = requestBuilder.build();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-
-            if (response.statusCode() == 204 || response.body() == null || response.body().isEmpty()) {
-                return null;
-            }
-
-            if (response.statusCode() == 200) {
-                return JsonMapper.fromJson(response.body(), Map.class);
-            }
-
-            if (response.statusCode() >= 400) {
-                throw new AgentAPIException(response.statusCode(), response.body());
-            }
-
-            return null;
-        } catch (AgentAPIException e) {
-            throw e;
-        } catch (Exception e) {
-            logger.debug("Poll task failed for {}: {}", taskType, e.getMessage());
-            return null;
-        }
-    }
-
-    /**
-     * Complete a task with output.
-     *
-     * @param taskId the task ID
-     * @param output the output map
-     */
-    public void completeTask(String taskId, String workflowInstanceId, Map<String, Object> output) {
-        Map<String, Object> body = new HashMap<>();
-        body.put("taskId", taskId);
-        if (workflowInstanceId != null) body.put("workflowInstanceId", workflowInstanceId);
-        body.put("status", "COMPLETED");
-        body.put("outputData", output);
-        post("/api/tasks", body);
-    }
-
-    /**
-     * Fail a task with an error message.
-     *
-     * @param taskId       the task ID
-     * @param errorMessage the error message
-     */
-    public void failTask(String taskId, String workflowInstanceId, String errorMessage) {
-        Map<String, Object> body = new HashMap<>();
-        body.put("taskId", taskId);
-        if (workflowInstanceId != null) body.put("workflowInstanceId", workflowInstanceId);
-        body.put("status", "FAILED");
-        body.put("reasonForIncompletion", errorMessage);
-        try {
-            post("/api/tasks", body);
-        } catch (Exception e) {
-            logger.warn("Failed to report task failure for {}: {}", taskId, e.getMessage());
-        }
-    }
-
-    /**
-     * Register a task definition on the server.
-     *
-     * @param taskName the task name to register
-     */
-    public void registerTaskDef(String taskName) {
-        Map<String, Object> taskDef = new HashMap<>();
-        taskDef.put("name", taskName);
-        taskDef.put("timeoutSeconds", 300);
-        taskDef.put("responseTimeoutSeconds", 300);
-        post("/api/metadata/taskdefs", List.of(taskDef));
-    }
-
-    /**
-     * Deploy an agent to the server without executing it (CI/CD operation).
-     *
-     * @param payload the deploy payload containing agentConfig or framework config
-     * @return server response containing agentName
-     */
+    /** {@code POST /api/agent/deploy} — deploy (compile + register, no execution). */
     public Map<String, Object> deployAgent(Map<String, Object> payload) {
         return post("/api/agent/deploy", payload);
     }
 
-    /**
-     * Get the workflow status for resume (extracts domain/run_id).
-     *
-     * @param workflowId the workflow ID
-     * @return workflow data map
-     */
-    public Map<String, Object> getWorkflow(String workflowId) {
-        return get("/api/workflow/" + workflowId);
+    /** {@code GET /api/agent/{id}/status} — fetch execution status. */
+    public Map<String, Object> getAgentStatus(String executionId) {
+        return get("/api/agent/" + executionId + "/status");
+    }
+
+    /** {@code POST /api/agent/{id}/respond} — respond to a waiting agent. */
+    public void respond(String executionId, Map<String, Object> body) {
+        post("/api/agent/" + executionId + "/respond", body);
+    }
+
+    /** {@code GET /api/workflow/{id}} — fetch raw workflow data (tasks, domain, run_id). */
+    public Map<String, Object> getWorkflow(String executionId) {
+        return get("/api/workflow/" + executionId);
     }
 
     // ── Internal helpers ─────────────────────────────────────────────────
 
     @SuppressWarnings("unchecked")
-    private Map<String, Object> get(String path) {
+    Map<String, Object> get(String path) {
         try {
             String url = config.getServerUrl() + path;
             HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
@@ -236,7 +85,7 @@ public class HttpApi {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() >= 400) {
-                throw new AgentAPIException(response.statusCode(), response.body());
+                throw apiError(response.statusCode(), response.body());
             }
 
             if (response.body() == null || response.body().isEmpty()) {
@@ -251,8 +100,15 @@ public class HttpApi {
         }
     }
 
+    private static AgentAPIException apiError(int statusCode, String body) {
+        if (statusCode == 404) {
+            return new AgentNotFoundException(statusCode, body);
+        }
+        return new AgentAPIException(statusCode, body);
+    }
+
     @SuppressWarnings("unchecked")
-    private Map<String, Object> post(String path, Object body) {
+    Map<String, Object> post(String path, Object body) {
         try {
             String url = config.getServerUrl() + path;
             String jsonBody = JsonMapper.toJson(body);
@@ -273,21 +129,19 @@ public class HttpApi {
             logger.debug("POST {} -> {} {}", url, response.statusCode(), response.body());
 
             if (response.statusCode() >= 400) {
-                throw new AgentAPIException(response.statusCode(), response.body());
+                throw apiError(response.statusCode(), response.body());
             }
 
             if (response.body() == null || response.body().isEmpty()) {
                 return new HashMap<>();
             }
 
-            // Handle string responses (some endpoints return plain strings)
             String responseBody = response.body().trim();
             if (responseBody.startsWith("{")) {
                 return JsonMapper.fromJson(responseBody, Map.class);
             } else if (responseBody.startsWith("\"") || (!responseBody.startsWith("[") && !responseBody.startsWith("{"))) {
-                // Plain string response (e.g., workflow ID)
                 Map<String, Object> result = new HashMap<>();
-                result.put("workflowId", responseBody.replace("\"", ""));
+                result.put("executionId", responseBody.replace("\"", ""));
                 return result;
             } else {
                 return JsonMapper.fromJson(responseBody, Map.class);
@@ -299,7 +153,7 @@ public class HttpApi {
         }
     }
 
-    private void addAuthHeaders(HttpRequest.Builder builder) {
+    void addAuthHeaders(HttpRequest.Builder builder) {
         if (config.getAuthKey() != null && !config.getAuthKey().isEmpty()) {
             builder.header("X-Auth-Key", config.getAuthKey());
         }
@@ -308,8 +162,12 @@ public class HttpApi {
         }
     }
 
-    public AgentConfig getConfig() {
+    AgentConfig getConfig() {
         return config;
+    }
+
+    HttpClient getRawClient() {
+        return httpClient;
     }
 
     public HttpClient getHttpClient() {
